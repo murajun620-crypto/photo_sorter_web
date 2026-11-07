@@ -2,100 +2,79 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <meta name="description" content="写真を送信せず、人物・日付・イベントで整理。ブラウザ内で顔の照合、ボケ確認、容量指定の圧縮。">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src blob: data:; connect-src http://127.0.0.1:8765; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
-  <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css?v=1.1.0">
-  <script defer src="./vendor/ort/ort.wasm.min.js"></script>
-  <script defer src="./vendor/exifr.js"></script>
-  <script defer src="./vendor/fflate.js"></script>
-  <script type="module" src="./src/app.js?v=1.1.0"></script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%232b664f'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./style.css?v=2.1.0">
+  <link rel="stylesheet" href="./local.css?v=2.1.0">
+  <script type="module" src="./app.js?v=2.1.0"></script>
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>WEB</small></span></a>
-    <span id="app-version" class="app-version">v1.1.0</span>
-    <button id="check-update" class="update-check" type="button">更新確認</button>
+    <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>PC LINK</small></span></a>
+    <span id="app-version" class="app-version">v2.1.0</span>
     <span class="tagline">写真を、渡したい人へ。</span>
-    <div class="private-badge"><span></span>写真はこの端末だけで処理</div>
-    <button class="text-button" id="help-button" aria-label="使い方を開く">使い方</button>
+    <span id="gpu-status" class="status-pill">GPUを確認中</span>
+    <span id="save-status" class="save-status" role="status">PCの保存データに接続中</span>
+    <button id="help-button" class="text-button">使い方</button>
+    <button id="shutdown-button" class="text-button" data-mutates>終了</button>
   </header>
+  <section id="connect-panel" class="notice connect-panel" hidden><h2>PC内の認識プログラムに接続</h2><p id="connection-message">PC側を起動して接続してください。人物登録とOK／NGはPCの保存データを使います。</p><button id="connect-pc" class="primary-button" type="button">PCに接続する</button></section>
+  <div id="connection-notice" class="connection-notice" role="alert" hidden></div>
   <div class="workspace">
     <aside class="sidebar">
       <section class="setting-section">
-        <div class="section-heading"><span class="step">01</span><h2>人物を登録</h2><button class="tiny-button" id="add-person">＋ 追加</button></div>
-        <p class="hint">読み込んだ写真の顔を選んで登録。集合写真から複数人を続けて指定できます。</p>
+        <div class="section-heading"><span class="step">01</span><h2>人物を登録</h2><button id="add-person" class="tiny-button">＋ 名前を追加</button></div>
+        <p class="hint">写真を開き、顔を選んで名前を登録。集合写真の友達も一人ずつ指定できます。</p>
         <div id="people-list" class="people-list"></div>
-        <button id="choose-face-photo" class="outline-button wide" disabled>読み込んだ写真から登録</button>
-        <button id="start-feedback" class="outline-button wide feedback-launch" disabled>OK／NGで判定を調整</button>
-        <p class="hint">写真を解析したら、写真を開いて顔ごとにOK／NGで修正できます。まとめて確認することもできます。</p>
-        <label class="check-line"><input id="review-feedback-answers" type="checkbox"> 回答済みのOK／NGを見直す</label>
-        <button id="add-reference" class="text-button wide">別の写真ファイルから追加</button>
-        <input id="reference-files" type="file" accept="image/jpeg,image/png" multiple hidden>
-        <div id="reference-list" class="reference-list"></div>
-        <label class="check-line"><input id="use-faces" type="checkbox" checked> 登録した人物で絞り込む</label>
-        <details class="advanced"><summary>顔の判定を調整</summary>
-          <label class="field-row">顔の距離しきい値 <input id="distance" type="number" min="0.1" max="2" step="0.01" value="1.10"></label>
-          <label class="field-row">候補間に必要な差 <input id="ambiguity-margin" type="number" min="0" max="0.3" step="0.01" value="0.05"></label>
-          <p class="hint">距離が小さいほど近い顔です。候補が近すぎる顔は確定せず「要確認」へ。まず同じ時期の正面・斜め・表情違いを3〜5枚登録してください。</p>
-        </details>
+        <button id="choose-face-photo" class="outline-button wide">写真から顔を登録</button>
+        <p class="saved-note">人物登録とOK／NGはこのPCに保存され、次回も使えます。</p>
       </section>
       <section class="setting-section">
-        <div class="section-heading"><span class="step">02</span><h2>日付とイベント</h2><button id="new-event" class="tiny-button">＋ 追加</button></div>
-        <p class="hint">1日のお出かけも、数日にわたる旅行も。</p>
+        <div class="section-heading"><span class="step">02</span><h2>日付とイベント</h2><button id="add-event" class="tiny-button">＋ 追加</button></div>
+        <p class="hint">日帰りのお出かけも、複数日にわたる旅行も。</p>
         <div id="event-list" class="event-list"></div>
-        <div id="day-list" class="day-list"><span class="muted">写真を読み込むと日付が並びます</span></div>
-        <div class="mini-actions"><button id="save-events" class="text-button">設定を書き出す</button><button id="load-events" class="text-button">読み込む</button></div>
-        <input id="event-file" type="file" accept="application/json,.json" hidden>
+        <div id="day-list" class="day-list"></div>
       </section>
       <section class="setting-section">
-        <div class="section-heading"><span class="step">03</span><h2>ボケと容量</h2></div>
-        <label class="check-line"><input id="skip-blur" type="checkbox"> 調整した基準でボケ候補を外す</label>
-        <p class="hint">初期設定では自動除外しません。写真を開き、同じ撮影日の「鮮明な例」「ボケた例」を3枚ずつ指定してください。</p>
-        <p id="blur-calibration-status" class="hint">基準は未調整です。</p>
-        <button id="enable-blur-calibration" class="text-button" disabled>調整した基準を適用</button>
-        <p class="hint">例を分けられない場合は自動選別を行いません。基準のない写真も除外せず、要確認に残します。</p>
-        <div class="separator"></div>
+        <div class="section-heading"><span class="step">03</span><h2>ボケと出力容量</h2></div>
+        <p class="hint">ボケの自動除外は行いません。写真を開いて「鮮明」「ボケ」を指定すると、手動で出力対象を整理できます。</p>
         <label class="check-line"><input id="compress" type="checkbox" checked> 指定容量以下のJPEGにする</label>
         <div class="size-row"><span>1枚</span><input id="target-size" type="number" min="0.01" step="0.1" value="1" aria-label="1枚あたりの上限容量"><select id="target-unit" aria-label="容量の単位"><option>MB</option><option>KB</option></select><span>以下</span></div>
-        <label class="check-line"><input id="allow-resize" type="checkbox" checked> 必要なら解像度を下げる</label>
-        <p class="hint">圧縮時は撮影情報・位置情報を除去。透明部分は白になります。</p>
+        <p class="hint">必要に応じて解像度も調整します。元の写真は変更しません。</p>
       </section>
-      <div class="sidebar-footer"><span data-app-version>v1.1.0</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
+      <div class="sidebar-footer">写真・顔の登録・訂正はPC内だけで処理します。<br><span id="storage-location"></span></div>
     </aside>
     <main>
       <section class="intro">
-        <div><span class="eyebrow">YOUR MEMORIES, ORGANIZED</span><h1>みんなの思い出を、<br class="mobile-only">それぞれのアルバムへ。</h1><p>人物を登録 → 写真を解析 → 写真を開いてOK／NGで修正。</p></div>
-        <button id="choose-source" class="primary-button"><span>＋</span> 写真フォルダを開く</button>
-        <input id="source-files" type="file" accept="image/jpeg,image/png" webkitdirectory multiple hidden>
+        <div><span class="eyebrow">YOUR MEMORIES, ORGANIZED</span><h1>みんなの思い出を、<br class="mobile-only">それぞれのアルバムへ。</h1><p>写真を開く → 顔に名前を付ける → 解析してOK／NGで修正。</p></div>
+        <button id="choose-source" class="primary-button">＋ 写真フォルダを開く</button>
       </section>
-      <section class="source-bar" aria-label="読み込み元"><span class="folder-icon">▱</span><div><strong id="source-name">フォルダが選択されていません</strong><small id="source-meta">サブフォルダの写真もまとめて整理できます</small></div><button id="fallback-source" class="text-button">ファイル選択で開く</button><button id="scan-button" class="primary-button" disabled>写真を解析</button></section>
-      <div id="browser-note" class="notice" hidden></div>
-      <div id="face-photo-notice" class="notice" hidden>登録する顔が写った写真をクリックしてください。<button id="cancel-face-photo" type="button" class="text-button">選択をやめる</button></div>
-      <section class="stats" aria-label="写真の集計"><div><span id="total-count">0</span><small>読み込み</small></div><div><span id="selected-count">0</span><small>出力対象</small></div><div><span id="day-count">0</span><small>撮影日</small></div><div><span id="blur-count">0</span><small>ボケ候補</small></div></section>
+      <section class="source-bar">
+        <span class="folder-icon">▱</span><div><strong id="source-name">写真フォルダを選んでください</strong><small id="source-meta">前回の登録と訂正は自動で読み込まれます</small></div>
+        <button id="enter-source" class="text-button">パスを入力</button>
+        <button id="scan-button" class="primary-button" disabled>写真を解析</button>
+      </section>
+      <div id="enroll-notice" class="notice" hidden>登録する顔が写った写真をクリックしてください。<button id="cancel-enroll" class="text-button">選択をやめる</button></div>
+      <div id="engine-notice" class="notice" hidden></div>
+      <section class="stats"><div><span id="total-count">0</span><small>読み込み</small></div><div><span id="selected-count">0</span><small>出力対象</small></div><div><span id="review-count">0</span><small>要確認</small></div><div><span id="person-count">0</span><small>登録人物</small></div></section>
       <section class="review-toolbar">
-        <div class="tabs" role="group" aria-label="表示の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="review">要確認</button><button class="tab" data-filter="blur">ボケ候補</button><button class="tab" data-filter="error">エラー</button></div>
+        <div class="tabs" aria-label="写真の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="review">要確認</button><button class="tab" data-filter="unanalysed">未解析</button><button class="tab" data-filter="blur">ボケ</button></div>
         <div class="filters"><select id="person-filter" aria-label="表示する人物"><option value="">すべての人物</option></select><select id="date-filter" aria-label="表示する日付"><option value="">すべての日付</option></select></div>
       </section>
-      <div class="selection-actions"><button id="select-visible" class="text-button" disabled>表示中を選択</button><button id="clear-visible" class="text-button" disabled>選択を外す</button><button id="reclassify" class="text-button" disabled>現在の設定で選び直す</button><span id="result-caption" class="muted">解析した写真をここで確認できます</span></div>
-      <section id="gallery" class="gallery" aria-label="写真一覧"></section>
-      <div id="empty-state" class="empty-state"><div class="empty-illustration"><span></span><span></span><span>＋</span></div><h2>まずは、写真フォルダから。</h2><p>大切な写真は、あなたの端末から外へ送信されません。<br>人物を登録してから解析すると、渡したい人ごとに整理できます。</p><button id="empty-import" class="outline-button">写真フォルダを選ぶ</button></div>
-      <div class="pagination" id="pagination" hidden><button id="prev-page" class="outline-button">前へ</button><span id="page-label"></span><button id="next-page" class="outline-button">次へ</button></div>
-      <section class="export-panel">
-        <div class="export-settings"><label for="export-mode">出力のまとめ方</label><select id="export-mode"><option value="people">人物ごとに分ける（集合写真は各人へ）</option><option value="any">選んだ写真をひとつにまとめる</option><option value="all">登録した全員が写る写真をまとめる</option></select><small id="folder-preview">人物名 / イベント / 日付 / 写真</small></div>
-        <div class="export-buttons"><button id="export-folder" class="primary-button" disabled>フォルダへ出力 <span>↗</span></button><button id="export-zip" class="outline-button" disabled>ZIPで保存</button></div>
-      </section>
-      <div class="cleanup-row"><p>ボケ候補を元のフォルダから整理する</p><button id="quarantine" class="text-button danger" disabled>候補を確認して退避</button><button id="restore" class="text-button" disabled>退避した写真を復元</button></div>
-      <footer class="main-footer"><span>画像処理はブラウザ内。アカウント登録・写真のアップロードは不要。</span><a href="./README.md" target="_blank" rel="noopener">使い方と対応環境</a></footer>
+      <div class="selection-actions"><button id="select-visible" class="text-button">表示中を出力対象に</button><button id="clear-visible" class="text-button">表示中を対象から外す</button><span id="visible-count" class="muted"></span></div>
+      <div id="empty-state" class="empty-state"><div class="empty-illustration"><span></span><span></span><span>＋</span></div><h2>いつもの写真フォルダから。</h2><p>写真はこのPCから読み込みます。<br>人物を登録して解析すると、友達ごとに分類できます。</p><button id="empty-import" class="primary-button">写真フォルダを開く</button></div>
+      <div id="gallery" class="gallery"></div>
+      <div class="pagination"><button id="prev-page" class="outline-button">前へ</button><span id="page-label">1 / 1</span><button id="next-page" class="outline-button">次へ</button></div>
+      <section class="export-panel"><div class="export-settings"><label for="export-mode">出力のまとめ方</label><select id="export-mode"><option value="people">人物ごとに分ける（集合写真は各人へ）</option><option value="any">選んだ写真をひとつにまとめる</option><option value="all">登録した全員が写る写真をまとめる</option></select><small>イベント・日付ごとのフォルダに整理します。</small></div><div class="export-buttons"><button id="export-folder" class="primary-button" disabled>フォルダへ出力</button></div></section>
+      <footer class="main-footer"><span>写真は外へ送りません。顔の解析も出力も、このPCで実行します。</span><span>JPEG / PNG · LOCAL</span></footer>
     </main>
   </div>
-  <div class="progress-dock" id="progress-dock" hidden><div><strong id="progress-title">処理中</strong><small id="progress-detail"></small></div><progress id="progress-bar" max="100" value="0"></progress><button id="cancel" class="outline-button">中止</button></div>
+  <div id="progress-dock" class="progress-dock" hidden><div><strong id="progress-title">処理しています</strong><small id="progress-detail"></small></div><progress id="progress-bar" max="100"></progress><button id="cancel-job" class="outline-button">中止</button></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <dialog id="dialog"><div id="dialog-content"></div></dialog>
-  <dialog id="face-editor-dialog" aria-label="写真から人物を登録"><div id="face-editor-content"></div></dialog>
-  <dialog id="update-dialog" aria-labelledby="update-heading"><div class="dialog-body"><h2 id="update-heading">アプリの更新</h2><p id="update-status" role="status">最新バージョンを確認します。</p><p>「更新して再開」で、読み込んだ写真・人物登録・選択・設定をこのブラウザに一時保存して引き継ぎます。</p></div><div class="dialog-actions"><button id="close-updates" class="outline-button" type="button">閉じる</button><button id="retry-update-restore" class="outline-button" type="button" hidden>復元を再試行</button><button id="restart-update" class="primary-button" type="button" hidden>更新して再開</button></div></dialog>
+  <dialog id="face-editor-dialog"><div id="face-editor-content"></div></dialog>
 </body>
 </html>
