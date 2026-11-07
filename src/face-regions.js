@@ -1,4 +1,4 @@
-import {detectFaces} from './imaging.js?v=1.0.2';
+import {detectFaces} from './imaging.js?v=1.0.3';
 
 /** Normalize a drag in either direction and clip it to the oriented photo. */
 export function normalizeRegion(box, width, height, {minSize = 16} = {}) {

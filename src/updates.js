@@ -1,6 +1,6 @@
 // App files are checked over the network; work snapshots stay in this browser.
-export const CURRENT_VERSION = '1.0.2';
-export const CURRENT_BUILD = '20261107.2';
+export const CURRENT_VERSION = '1.0.3';
+export const CURRENT_BUILD = '20261107.3';
 const SNAPSHOT_FORMAT = 'photosorter-update';
 const UPDATE_PARAM = '_update';
 

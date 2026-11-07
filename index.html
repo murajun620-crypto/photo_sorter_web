@@ -8,16 +8,16 @@
   <meta name="referrer" content="no-referrer">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css?v=1.0.2">
+  <link rel="stylesheet" href="./style.css?v=1.0.3">
   <script defer src="./vendor/face-api.min.js"></script>
   <script defer src="./vendor/exifr.js"></script>
   <script defer src="./vendor/fflate.js"></script>
-  <script type="module" src="./src/app.js?v=1.0.2"></script>
+  <script type="module" src="./src/app.js?v=1.0.3"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>WEB</small></span></a>
-    <span id="app-version" class="app-version">v1.0.2</span>
+    <span id="app-version" class="app-version">v1.0.3</span>
     <button id="check-update" class="update-check" type="button">更新確認</button>
     <span class="tagline">写真を、渡したい人へ。</span>
     <div class="private-badge"><span></span>写真はこの端末だけで処理</div>
@@ -30,13 +30,17 @@
         <p class="hint">読み込んだ写真の顔を選んで登録。集合写真から複数人を続けて指定できます。</p>
         <div id="people-list" class="people-list"></div>
         <button id="choose-face-photo" class="outline-button wide" disabled>読み込んだ写真から登録</button>
+        <button id="start-feedback" class="outline-button wide feedback-launch" disabled>OK／NGで判定を調整</button>
+        <p class="hint">登録後はまず12枚を試し判定。顔ごとのOK／NGを全体へ反映します。</p>
+        <label class="check-line"><input id="review-feedback-answers" type="checkbox"> 回答済みのOK／NGを見直す</label>
         <button id="add-reference" class="text-button wide">別の写真ファイルから追加</button>
         <input id="reference-files" type="file" accept="image/jpeg,image/png" multiple hidden>
         <div id="reference-list" class="reference-list"></div>
         <label class="check-line"><input id="use-faces" type="checkbox" checked> 登録した人物で絞り込む</label>
         <details class="advanced"><summary>顔の判定を調整</summary>
           <label class="field-row">顔の距離しきい値 <input id="distance" type="number" min="0.1" max="1" step="0.01" value="0.52"></label>
-          <p class="hint">小さいほど厳密。目安は0.45〜0.60。角度や年齢の違う顔写真を数枚登録してください。</p>
+          <label class="field-row">候補間に必要な差 <input id="ambiguity-margin" type="number" min="0" max="0.3" step="0.01" value="0.05"></label>
+          <p class="hint">距離が小さいほど近い顔です。候補が近すぎる顔は確定せず「要確認」へ。まず同じ時期の正面・斜め・表情違いを3〜5枚登録してください。</p>
         </details>
       </section>
       <section class="setting-section">
@@ -49,16 +53,18 @@
       </section>
       <section class="setting-section">
         <div class="section-heading"><span class="step">03</span><h2>ボケと容量</h2></div>
-        <label class="check-line"><input id="skip-blur" type="checkbox" checked> ボケ候補を出力から外す</label>
-        <label class="field-row">鮮明度のしきい値 <input id="blur-threshold" type="number" min="0" max="100000" step="10" value="90"></label>
-        <p class="hint">この値未満をボケ候補にします。写真を見て調整してください。</p>
+        <label class="check-line"><input id="skip-blur" type="checkbox"> 調整した基準でボケ候補を外す</label>
+        <p class="hint">初期設定では自動除外しません。写真を開き、同じ撮影日の「鮮明な例」「ボケた例」を3枚ずつ指定してください。</p>
+        <p id="blur-calibration-status" class="hint">基準は未調整です。</p>
+        <button id="enable-blur-calibration" class="text-button" disabled>調整した基準を適用</button>
+        <p class="hint">例を分けられない場合は自動選別を行いません。基準のない写真も除外せず、要確認に残します。</p>
         <div class="separator"></div>
         <label class="check-line"><input id="compress" type="checkbox" checked> 指定容量以下のJPEGにする</label>
         <div class="size-row"><span>1枚</span><input id="target-size" type="number" min="0.01" step="0.1" value="1" aria-label="1枚あたりの上限容量"><select id="target-unit" aria-label="容量の単位"><option>MB</option><option>KB</option></select><span>以下</span></div>
         <label class="check-line"><input id="allow-resize" type="checkbox" checked> 必要なら解像度を下げる</label>
         <p class="hint">圧縮時は撮影情報・位置情報を除去。透明部分は白になります。</p>
       </section>
-      <div class="sidebar-footer"><span data-app-version>v1.0.2</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
+      <div class="sidebar-footer"><span data-app-version>v1.0.3</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
     </aside>
     <main>
       <section class="intro">
@@ -71,7 +77,7 @@
       <div id="face-photo-notice" class="notice" hidden>登録する顔が写った写真をクリックしてください。<button id="cancel-face-photo" type="button" class="text-button">選択をやめる</button></div>
       <section class="stats" aria-label="写真の集計"><div><span id="total-count">0</span><small>読み込み</small></div><div><span id="selected-count">0</span><small>出力対象</small></div><div><span id="day-count">0</span><small>撮影日</small></div><div><span id="blur-count">0</span><small>ボケ候補</small></div></section>
       <section class="review-toolbar">
-        <div class="tabs" role="group" aria-label="表示の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="blur">ボケ候補</button><button class="tab" data-filter="error">エラー</button></div>
+        <div class="tabs" role="group" aria-label="表示の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="review">要確認</button><button class="tab" data-filter="blur">ボケ候補</button><button class="tab" data-filter="error">エラー</button></div>
         <div class="filters"><select id="person-filter" aria-label="表示する人物"><option value="">すべての人物</option></select><select id="date-filter" aria-label="表示する日付"><option value="">すべての日付</option></select></div>
       </section>
       <div class="selection-actions"><button id="select-visible" class="text-button" disabled>表示中を選択</button><button id="clear-visible" class="text-button" disabled>選択を外す</button><button id="reclassify" class="text-button" disabled>現在の設定で選び直す</button><span id="result-caption" class="muted">解析した写真をここで確認できます</span></div>

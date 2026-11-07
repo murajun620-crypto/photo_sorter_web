@@ -57,18 +57,84 @@ export function eventFolder(event) {
   return `${event.start}${event.end !== event.start ? `_${event.end}` : ''}_${safeName(event.name)}`;
 }
 
-export function classifyPhoto(record, profiles, {useFaces, maxDistance, blurThreshold, skipBlur, mode}) {
-  if (record.error) return {...record, matchedIds: [], blurry: false, selected: false};
-  const ids = profiles.filter(p => record.distances?.[p.id] != null && record.distances[p.id] <= maxDistance).map(p => p.id);
+/** One detected face can confirm at most one registered identity. */
+export function assignFace(face, profiles, {maxDistance, ambiguityMargin = .05, negativeMargin = .03}) {
+  if (!Number.isFinite(maxDistance) || maxDistance < 0 || !Number.isFinite(ambiguityMargin) || ambiguityMargin < 0 ||
+      !Number.isFinite(negativeMargin) || negativeMargin < 0) {
+    throw new Error('顔の判定しきい値を正しく指定してください。');
+  }
+  const activeIds = [...new Set(profiles.map(person => person.id).filter(id => typeof id === 'string' && id))];
+  const ranked = activeIds.map(id => ({id, distance: face?.distances?.[id]}))
+    .filter(item => Number.isFinite(item.distance) && item.distance >= 0)
+    .sort((a,b) => a.distance-b.distance);
+  const best = ranked[0], runnerUp = ranked[1];
+  const gap = runnerUp ? runnerUp.distance-best.distance : null;
+  const result = {personId:null, status:'unknown', candidateIds:[], distance:best?.distance ?? null,
+    runnerUpDistance:runnerUp?.distance ?? null, margin:gap, reviewReason:null};
+  const accepted = activeIds.filter(id => face?.feedback?.[id] === 'ok');
+  const rejected = activeIds.filter(id => face?.feedback?.[id] === 'ng');
+  if (accepted.length === 1) {
+    // This specific face was identified by the user, even if the model score
+    // is absent or favors somebody else. Never assign an additional identity.
+    const id = accepted[0];
+    const positive = ranked.find(item => item.id === id)?.distance ?? null;
+    const other = ranked.find(item => item.id !== id)?.distance ?? null;
+    return {...result, personId:id, status:'matched', candidateIds:[id], distance:positive,
+      runnerUpDistance:other, margin:positive !== null && other !== null ? other-positive : null};
+  }
+  if (accepted.length > 1) {
+    // Conflicting manual labels are reviewable, not multiple people in one face.
+    return {...result, status:'rejected', candidateIds:accepted, reviewReason:'feedback'};
+  }
+  if (!best) return rejected.length
+    ? {...result, status:'rejected', candidateIds:rejected, reviewReason:'feedback'} : result;
+  const epsilon = 1e-12;
+  const negative = face?.rejectDistances?.[best.id];
+  if (rejected.includes(best.id) || Number.isFinite(negative) && negative >= 0 && negative <= best.distance+negativeMargin+epsilon) {
+    // A rejected best candidate cannot silently fall through to the runner-up.
+    return {...result, status:'rejected', candidateIds:[best.id], reviewReason:'feedback'};
+  }
+  const nearby = ranked.filter(item => item.distance <= maxDistance+.10+epsilon && item.distance <= best.distance+.10+epsilon);
+  if (best.distance <= maxDistance+epsilon) {
+    // Exact ties remain unresolved even if a caller chooses a zero margin.
+    if (runnerUp && (gap <= epsilon || gap+epsilon < ambiguityMargin)) {
+      return {...result, status:'ambiguous', candidateIds:nearby.map(item => item.id)};
+    }
+    return {...result, personId:best.id, status:'matched', candidateIds:[best.id]};
+  }
+  if (best.distance <= maxDistance+.10+epsilon) {
+    return {...result, status:'near', candidateIds:nearby.slice(0,2).map(item => item.id)};
+  }
+  return result;
+}
+
+export function classifyPhoto(record, profiles, {useFaces, maxDistance, blurThreshold, skipBlur, mode, ambiguityMargin = .05, negativeMargin = .03}) {
+  if (record.error) return {...record, matchedIds: [], faceMatches:[], reviewIds:[], needsReview:false, reviewReason:null,
+    match:false, sharpness:null, sharpnessBasis:null, blurry:false, selected:false};
+  const faces = record.faces ?? [];
+  const faceMatches = faces.map((face,faceIndex) => ({faceIndex, ...assignFace(face,profiles,{maxDistance,ambiguityMargin,negativeMargin})}));
   const activeIds = new Set(profiles.map(p => p.id));
+  const confirmedIds = new Set(faceMatches.filter(face => face.status === 'matched').map(face => face.personId));
+  const ids = [...activeIds].filter(id => confirmedIds.has(id));
   // A removed profile must not keep an old manual match alive.
   const matchedIds = record.manualPeople == null ? ids
     : [...new Set(record.manualPeople.filter(id => activeIds.has(id)))];
-  const targetFaces = (record.faces ?? []).filter(f => matchedIds.some(id => f.distances?.[id] != null && f.distances[id] <= maxDistance));
-  const sharpness = useFaces && targetFaces.length ? Math.min(...targetFaces.map(f => f.blur)) : record.fullBlur;
+  const unresolved = faceMatches.filter(face => face.status === 'ambiguous' || face.status === 'near' || face.status === 'rejected');
+  const manual = record.manualPeople != null;
+  const needsReview = Boolean(useFaces && !manual && (!faces.length || unresolved.length));
+  const reviewIds = needsReview ? [...new Set(unresolved.flatMap(face => face.candidateIds))] : [];
+  const reviewReason = !needsReview ? null : !faces.length ? 'no-face'
+    : unresolved.some(face => face.status === 'rejected') ? 'feedback'
+      : unresolved.some(face => face.status === 'ambiguous') ? 'ambiguous' : 'near';
+  // A close score for another identity must not choose the wrong face's blur.
+  const targetFaces = faceMatches.filter(face => face.status === 'matched' && matchedIds.includes(face.personId))
+    .map(face => faces[face.faceIndex]);
+  const sharpnessBasis = useFaces && targetFaces.length ? 'face' : 'whole';
+  const sharpness = sharpnessBasis === 'face' ? Math.min(...targetFaces.map(f => f.blur)) : record.fullBlur;
   const blurry = sharpness < blurThreshold;
   const match = !useFaces || (mode === 'all' ? profiles.length > 0 && profiles.every(p => matchedIds.includes(p.id)) : matchedIds.length > 0);
-  return {...record, matchedIds, sharpness, blurry, match, selected: match && !(skipBlur && blurry)};
+  return {...record, matchedIds, faceMatches, reviewIds, needsReview, reviewReason, sharpness, sharpnessBasis, blurry, match,
+    selected: match && !(skipBlur && blurry)};
 }
 
 export function outputPlan(records, profiles, events, {mode = 'people', useFaces = true} = {}) {
