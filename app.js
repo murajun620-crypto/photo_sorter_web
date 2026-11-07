@@ -1,10 +1,10 @@
-import {mountFaceEditor} from './face-editor.js?v=2.2.3';
+import {mountFaceEditor} from './face-editor.js?v=2.3.0';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.round(Number(bytes||0)/1000)} KB`;
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
-const UI_VERSION='2.2.3';
+const UI_VERSION='2.3.0';
 const PUBLIC_VERSION_URL='https://murajun620-crypto.github.io/photo_sorter_web/version.json';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
 const CONNECTION_KEY='photosorter-pc-session-v1';
@@ -43,6 +43,7 @@ let data={people:[],photos:[],events:[],settings:{},engine:{},job:{}};
 let currentPerson='',filter='all',page=0,enrollMode=false,pending=0,connected=false,pollTimer,refreshing=false;
 let activePhotoId=null,detailGeneration=0,detailImage=null,editor=null,editorImage=null,editorPhotoId=null,toastTimer,lastJobKey='',settingsInitialized=false;
 let checkingUpdate=false;
+let activeGame='',uniformEnroll=null;
 const perPage=48;
 const UNCLASSIFIED='__unclassified__';
 const busy=()=>pending>0||Boolean(data.job?.running);
@@ -79,6 +80,7 @@ async function refresh(){
     const incoming=await api('/api/state'),wasRunning=Boolean(data.job?.running),previousProject=data.currentProject?.id;
     data=incoming.state||incoming;
     data.people ||= [];data.photos ||= [];data.events ||= [];data.settings ||= {};data.engine ||= {};data.job ||= {};
+    data.jerseyGames ||= [];data.jerseyUniforms ||= [];data.jerseyRoster ||= [];
     if(previousProject&&previousProject!==data.currentProject?.id)resetProjectView();
     connected=true;$('connection-notice').hidden=true;
     if(!data.people.some(person=>person.id===currentPerson))currentPerson=data.people[0]?.id||'';
@@ -122,7 +124,11 @@ async function perform(action,{message='PCに保存しました。',refreshDetai
 function updateControls(){
   const disabled=!connected||busy();
   $('check-update').disabled=checkingUpdate||busy();
-  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project').forEach(node=>node.disabled=disabled);
+  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project,#add-jersey-game,#jersey-game,#assign-jersey-game,#own-uniform,#opponent-uniform,#add-jersey-number,#read-jerseys').forEach(node=>node.disabled=disabled);
+  for(const id of ['own-uniform','opponent-uniform'])$(id).disabled=disabled||!activeGame||!data.photos.length;
+  $('assign-jersey-game').disabled=disabled||!activeGame||!filtered().length;
+  $('add-jersey-number').disabled=disabled||!activeGame||!data.people.length;
+  $('read-jerseys').disabled=disabled||!data.engine.jersey?.ready||!filtered().some(p=>p.jerseyGameId);
   document.querySelectorAll('#photo-form input,#photo-form select,#event-form input,#person-form input,#path-form input').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('[data-close]').forEach(node=>node.disabled=pending>0);
   $('scan-button').disabled=disabled||!data.photos.length;
@@ -132,15 +138,15 @@ function updateControls(){
   $('cancel-job').disabled=!data.job.running;
   const job=data.job||{};$('progress-dock').hidden=!job.running;
   if(job.running){
-    const titles={folder:'Windowsのフォルダ選択を待っています',register:'人物と顔をPCに登録しています',initialize:'GPUを準備しています',import:'写真を読み込んでいます',analyze:'GPUで写真を解析しています',export:'写真を出力しています'};
+    const titles={folder:'Windowsのフォルダ選択を待っています',register:'人物と顔をPCに登録しています',initialize:'GPUを準備しています',import:'写真を読み込んでいます',analyze:'GPUで写真を解析しています',jersey:'GPUで背番号とチームを確認しています',uniform:'ユニフォームの見本を保存しています',export:'写真を出力しています'};
     $('progress-title').textContent=titles[job.type]||'PCで処理しています';$('progress-detail').textContent=job.message||'';
     if(job.total>0)$('progress-bar').value=job.done/job.total*100;else $('progress-bar').removeAttribute('value');
   }
 }
 
 function filtered(){
-  const person=$('person-filter').value,date=$('date-filter').value;
-  return data.photos.filter(photo=>(filter==='all'||filter==='selected'&&photo.selected||filter==='review'&&photo.needsReview||filter==='unanalysed'&&!photo.analyzed||filter==='blur'&&(photo.blurLabel==='blur'||photo.blurry))&&(!person||(person===UNCLASSIFIED?photo.analyzed&&!photo.error&&!photo.matchedIds?.length:photo.matchedIds?.includes(person)))&&(!date||photo.date===date));
+  const person=$('person-filter').value,date=$('date-filter').value,game=$('game-filter').value;
+  return data.photos.filter(photo=>(filter==='all'||filter==='selected'&&photo.selected||filter==='review'&&photo.needsReview||filter==='unanalysed'&&!photo.analyzed||filter==='blur'&&(photo.blurLabel==='blur'||photo.blurry))&&(!person||(person===UNCLASSIFIED?photo.analyzed&&!photo.error&&!photo.matchedIds?.length:photo.matchedIds?.includes(person)))&&(!date||photo.date===date)&&(!game||(game==='__unassigned__'?!photo.jerseyGameId:photo.jerseyGameId===game)));
 }
 function visible(){return filtered().slice(page*perPage,(page+1)*perPage);}
 
@@ -150,6 +156,81 @@ function renderPeople(){
   $('person-filter').innerHTML=`<option value="">すべての人物</option><option value="${UNCLASSIFIED}">人物未分類</option>`+data.people.map(person=>`<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('');
   $('person-filter').value=value===UNCLASSIFIED||data.people.some(person=>person.id===value)?value:'';
 }
+
+function renderJerseys(){
+  const games=data.jerseyGames||[];
+  if(!games.some(game=>game.id===activeGame))activeGame=games[0]?.id||'';
+  $('jersey-game').innerHTML=games.length?games.map(game=>`<option value="${esc(game.id)}">${esc(game.name)}</option>`).join(''):'<option value="">先に試合を追加</option>';
+  $('jersey-game').value=activeGame;
+  const previous=$('game-filter').value;
+  $('game-filter').innerHTML='<option value="">すべての試合</option><option value="__unassigned__">試合未設定</option>'+games.map(game=>`<option value="${esc(game.id)}">${esc(game.name)}</option>`).join('');
+  $('game-filter').value=previous==='__unassigned__'||games.some(game=>game.id===previous)?previous:'';
+  const samples=(data.jerseyUniforms||[]).filter(s=>s.gameId===activeGame),roster=(data.jerseyRoster||[]).filter(row=>row.gameId===activeGame);
+  $('jersey-samples').innerHTML=samples.map((sample,index)=>`<div><span>${sample.side==='own'?'味方':'相手'}の見本 ${index+1}</span><button class="tiny-button" data-remove-sample="${esc(sample.id)}" data-mutates>削除</button></div>`).join('');
+  $('jersey-roster').innerHTML=roster.map(row=>`<div><span>#${esc(row.number)} → ${esc(getPerson(row.personId)?.name||'人物不明')}</span><button class="tiny-button" data-remove-number="${esc(row.id)}" data-mutates>削除</button></div>`).join('')||'<p class="hint">番号と人物を登録してください。同じ番号が複数名なら自動確定しません。</p>';
+  const ready=data.engine.jersey?.ready;
+  $('jersey-status').textContent=!ready?(data.engine.jersey?.error||'背番号認識の準備を待っています。'):!activeGame?'試合を追加し、写真を割り当ててください。':!samples.some(s=>s.side==='own')||!samples.some(s=>s.side==='opponent')?'味方と相手のユニフォーム見本を両方登録してください。色が似ている場合は確認に回します。':'GPUで背番号を読みます。試合未設定の写真は読み取り対象に含めません。';
+}
+
+function editJerseyGame(){
+  if(busy())return;
+  showDialog(`<form id="jersey-game-form"><div class="dialog-body"><h2>試合を追加</h2><p>フォルダや日付とは別に試合を作れます。同じ日の別試合も別の設定にしてください。</p><label class="dialog-field">試合名<input id="jersey-game-name" required maxlength="80" placeholder="例：11月8日 午前の試合"></label></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>試合を作成</button>')}</form>`);
+  $('jersey-game-form').onsubmit=async event=>{event.preventDefault();const name=$('jersey-game-name').value.trim();const result=await perform(()=>api('/api/jersey/games',{name}),{message:'試合を保存しました。'});if(result){activeGame=result.game.id;closeDialog();renderJerseys();updateControls();}};
+}
+
+function assignJerseyRange(){
+  if(busy()||!activeGame)return;
+  const photos=filtered().slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.relative||a.name).localeCompare(b.relative||b.name,undefined,{numeric:true}));
+  if(!photos.length)return;
+  const options=photos.map((photo,index)=>`<option value="${index}">${esc(photo.date)} · ${esc(photo.relative||photo.name)}</option>`).join('');
+  showDialog(`<form id="jersey-range-form"><div class="dialog-body"><h2>写真を試合に割り当て</h2><p>現在の表示条件に合うすべての写真を、日付・ファイル名順に並べています。開始〜終了の連続範囲を設定します。同じフォルダに別の試合があっても、この範囲だけが対象です。</p><label class="dialog-field">試合<select id="range-game">${(data.jerseyGames||[]).map(game=>`<option value="${esc(game.id)}" ${game.id===activeGame?'selected':''}>${esc(game.name)}</option>`).join('')}</select></label><label class="dialog-field">開始の写真<select id="range-start">${options}</select></label><label class="dialog-field">終了の写真<select id="range-end">${options}</select></label><p id="range-count" class="hint"></p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>この範囲に試合を設定</button>')}</form>`);
+  $('range-end').value=String(photos.length-1);
+  const range=()=>{const start=Number($('range-start').value),end=Number($('range-end').value);return start<=end?photos.slice(start,end+1):[];};
+  const count=()=>$('range-count').textContent=`対象：${range().length}枚。既に試合が付いている写真は、この設定に変更します。`;
+  $('range-start').onchange=count;$('range-end').onchange=count;count();
+  $('jersey-range-form').onsubmit=async event=>{event.preventDefault();const ids=range().map(photo=>photo.id),gameId=$('range-game').value;if(!ids.length)return toast('開始と終了の順番を確認してください。',true);const result=await perform(()=>api('/api/jersey/assign',{ids,gameId}),{message:`${ids.length}枚の試合を保存しました。`});if(result)closeDialog();};
+}
+
+function addJerseyNumber(){
+  if(busy()||!activeGame)return;
+  showDialog(`<form id="jersey-number-form"><div class="dialog-body"><h2>背番号と人物を登録</h2><p>${esc(data.jerseyGames.find(g=>g.id===activeGame)?.name)} の番号表に保存します。</p><label class="dialog-field">背番号<input id="jersey-number" inputmode="numeric" pattern="[0-9]{1,3}" maxlength="3" required></label><label class="dialog-field">人物<select id="jersey-person">${data.people.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label><p class="hint">番号だけでは人物を決めません。この試合の味方ユニフォームとの一致も必要です。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>番号表に保存</button>')}</form>`);
+  $('jersey-number-form').onsubmit=async event=>{event.preventDefault();const number=$('jersey-number').value,personId=$('jersey-person').value,gameId=activeGame;const result=await perform(()=>api('/api/jersey/roster',{gameId,number,personId}),{message:'番号と人物を保存しました。'});if(result)closeDialog();};
+}
+
+function chooseUniform(side){
+  if(busy()||!activeGame)return;
+  uniformEnroll={gameId:activeGame,side};enrollMode=false;filter='all';page=0;$('person-filter').value='';$('game-filter').value='';
+  document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));
+  $('uniform-notice-text').textContent=`${data.jerseyGames.find(g=>g.id===activeGame)?.name}：${side==='own'?'味方':'相手'}のユニフォームが写った写真をクリックしてください。`;
+  $('uniform-notice').hidden=false;renderGallery();$('uniform-notice').scrollIntoView({behavior:'smooth',block:'center'});
+}
+
+async function openUniformEditor(photoId,choice){
+  const photo=getPhoto(photoId);if(!photo||busy())return;
+  showDialog(`<form id="uniform-form"><div class="dialog-body"><h2>${choice.side==='own'?'味方':'相手'}のユニフォーム見本</h2><p>${esc(data.jerseyGames.find(g=>g.id===choice.gameId)?.name)} の見本です。シャツの生地・模様を四角で囲んでください。顔・腕・芝生をできるだけ含めず、番号だけの範囲は避けてください。味方・相手それぞれの別配色やGKも、見本を追加できます。</p><canvas id="uniform-canvas" class="jersey-crop-canvas" aria-label="ユニフォームの範囲をドラッグで指定"></canvas><p id="uniform-region-status" class="hint">写真を読み込んでいます…</p></div>${dialogActions('<button type="submit" id="save-uniform" class="primary-button" data-mutates>この見本を保存</button>')}</form>`);
+  const generation=++detailGeneration;
+  try{
+    const image=await loadImage(photoId);if(generation!==detailGeneration||!$('uniform-canvas'))return;
+    const canvas=$('uniform-canvas'),context=canvas.getContext('2d'),scale=Math.min(1,900/image.naturalWidth,480/image.naturalHeight);
+    canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));let start=null,region=null;
+    const point=event=>{const r=canvas.getBoundingClientRect();return {x:Math.max(0,Math.min(image.naturalWidth,(event.clientX-r.left)*image.naturalWidth/r.width)),y:Math.max(0,Math.min(image.naturalHeight,(event.clientY-r.top)*image.naturalHeight/r.height))};};
+    const paint=()=>{context.drawImage(image,0,0,canvas.width,canvas.height);if(region){context.strokeStyle='#d47b2f';context.lineWidth=3;context.strokeRect(region.x*scale,region.y*scale,region.width*scale,region.height*scale);}};
+    canvas.onpointerdown=event=>{start=point(event);canvas.setPointerCapture(event.pointerId);};
+    canvas.onpointermove=event=>{if(!start)return;const end=point(event);region={x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)};paint();};
+    canvas.onpointerup=event=>{if(!start)return;canvas.onpointermove(event);start=null;$('uniform-region-status').textContent='囲んだシャツが正しければ見本を保存してください。';};
+    canvas.onpointercancel=()=>{start=null;};paint();$('uniform-region-status').textContent='シャツの生地・模様をドラッグで囲んでください。';
+    $('uniform-form').onsubmit=async event=>{event.preventDefault();if(!region||region.width<16||region.height<16)return toast('ユニフォームを少し広く囲んでください。',true);const result=await perform(()=>api('/api/jersey/sample',{photoId,gameId:choice.gameId,side:choice.side,region}),{message:null});if(result)closeDialog();};
+  }catch(error){if($('uniform-region-status'))$('uniform-region-status').textContent=error.message;}
+}
+
+$('add-jersey-game').onclick=editJerseyGame;
+$('jersey-game').onchange=event=>{activeGame=event.target.value;renderJerseys();updateControls();};
+$('assign-jersey-game').onclick=assignJerseyRange;$('add-jersey-number').onclick=addJerseyNumber;
+$('own-uniform').onclick=()=>chooseUniform('own');$('opponent-uniform').onclick=()=>chooseUniform('opponent');
+$('cancel-uniform').onclick=()=>{uniformEnroll=null;$('uniform-notice').hidden=true;};
+$('read-jerseys').onclick=()=>void perform(()=>api('/api/jersey/analyze',{ids:filtered().map(photo=>photo.id)}),{message:null});
+$('jersey-samples').onclick=event=>{const id=event.target.closest('[data-remove-sample]')?.dataset.removeSample;if(id)void perform(()=>api('/api/jersey/sample-delete',{id}),{message:'見本を削除しました。'});};
+$('jersey-roster').onclick=event=>{const id=event.target.closest('[data-remove-number]')?.dataset.removeNumber;if(id)void perform(()=>api('/api/jersey/roster',{id,delete:true}),{message:'番号表から削除しました。'});};
 
 function renderEvents(){
   $('event-list').innerHTML=data.events.length?data.events.map(event=>`<div class="event-chip"><div><strong>${esc(event.name)}</strong><small>${esc(event.start)}${event.end!==event.start?` 〜 ${esc(event.end)}`:''}</small></div><button class="tiny-button" data-event="${esc(event.id)}" data-mutates>編集</button></div>`).join(''):'<p class="hint">イベントを追加すると、期間内の写真をまとめて出力できます。</p>';
@@ -189,7 +270,7 @@ function render(){
     if(Number(target)>0){$('target-unit').value=target>=1e6?'MB':'KB';$('target-size').value=String(target/(target>=1e6?1e6:1000));}
     $('export-mode').value=['people','any','all'].includes(data.settings.exportMode)?data.settings.exportMode:'people';settingsInitialized=true;
   }
-  renderProjects();renderPeople();renderEvents();renderGallery();updateControls();
+  renderProjects();renderPeople();renderEvents();renderJerseys();renderGallery();updateControls();
 }
 
 function closeDialog(){
@@ -228,6 +309,7 @@ async function checkForUpdate(){
 $('check-update').onclick=()=>void checkForUpdate();
 
 function resetProjectView(){
+  activeGame='';uniformEnroll=null;$('game-filter').value='';$('uniform-notice').hidden=true;
   currentPerson='';filter='all';page=0;enrollMode=false;settingsInitialized=false;detailGeneration++;
   activePhotoId=null;detailImage=null;editorPhotoId=null;editor?.destroy();editor=null;
   if(editorImage){editorImage.width=editorImage.height=1;editorImage=null;}
@@ -316,13 +398,15 @@ async function loadImage(id){
   finally{URL.revokeObjectURL(url);}
 }
 
-function drawScene(canvas,image,faces){
+function drawScene(canvas,image,faces,jerseys=[]){
   const scale=Math.min(1,1100/image.naturalWidth,620/image.naturalHeight);canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));
   const context=canvas.getContext('2d');context.drawImage(image,0,0,canvas.width,canvas.height);
   faces.forEach((face,index)=>{const box=face.box;if(!box)return;const x=box.x*scale,y=box.y*scale,w=box.width*scale,h=box.height*scale;context.lineWidth=3;context.strokeStyle='#d47b2f';context.strokeRect(x,y,w,h);const top=Math.max(0,y-22);context.fillStyle='#874713';context.fillRect(x,top,28,22);context.fillStyle='#fff';context.font='bold 16px sans-serif';context.fillText(String(index+1),x+6,top+17);});
+  jerseys.forEach(item=>{const box=item.numberBox||item.bodyBox;if(!box)return;context.lineWidth=3;context.strokeStyle=item.status==='opponent'?'#7c8480':item.personId?'#286348':'#bd6d22';context.strokeRect(box.x*scale,box.y*scale,box.width*scale,box.height*scale);context.font='bold 15px sans-serif';context.fillStyle=context.strokeStyle;context.fillText('#'+(item.number||'?'),box.x*scale,Math.max(16,box.y*scale-5));});
 }
 
 async function openPhoto(id){
+  if(uniformEnroll){const choice=uniformEnroll;uniformEnroll=null;$('uniform-notice').hidden=true;return openUniformEditor(id,choice);}
   if(enrollMode){enrollMode=false;renderGallery();return openEnrollment(id);}
   showDialog('');activePhotoId=id;await renderPhotoDetail(id);
 }
@@ -330,31 +414,52 @@ async function openPhoto(id){
 async function renderPhotoDetail(id){
   const photo=getPhoto(id);if(!photo)return;
   const generation=++detailGeneration;activePhotoId=id;
-  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!photo.analyzed?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">背中姿など顔が見えない場合は、背番号などを確認して人物を指定できます。この指定は顔の学習例には追加しません。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
+  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!(photo.faceAnalyzed??photo.analyzed)?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">背中姿など顔が見えない場合は、背番号などを確認して人物を指定できます。この指定は顔の学習例には追加しません。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
   paintFaceAnswers(photo);
-  let peopleChanged=false;
+  const jerseyPosition=photo.jerseys?.length?$('face-answer-list').previousElementSibling.previousElementSibling:$('photo-date').closest('label');
+  jerseyPosition.insertAdjacentHTML('beforebegin',`<section><h3 class="detail-heading">背番号と試合</h3><label class="dialog-field">この写真の試合<select id="photo-jersey-game"><option value="">試合未設定</option>${(data.jerseyGames||[]).map(game=>`<option value="${esc(game.id)}" ${game.id===photo.jerseyGameId?'selected':''}>${esc(game.name)}</option>`).join('')}</select></label><button id="read-photo-jersey" type="button" class="outline-button" data-mutates>この写真の背番号を読み直す</button><div id="jersey-result-list"></div></section>`);
+  paintJerseyAnswers(photo);
+  let peopleChanged=false,gameChanged=false,selectionChanged=false;
+  $('photo-selected').onchange=()=>selectionChanged=true;
+  $('photo-jersey-game').onchange=()=>{gameChanged=true;$('jersey-result-list').textContent='試合を変更しました。写真の設定を保存するか、背番号を読み直してください。';};
+  $('read-photo-jersey').onclick=()=>{if(!$('photo-jersey-game').value)return toast('先にこの写真の試合を指定してください。',true);void perform(async()=>{if(gameChanged){await api('/api/photo',{id,jerseyGameId:$('photo-jersey-game').value});gameChanged=false;}return api('/api/jersey/analyze',{ids:[id],force:true});},{message:null});};
+  $('jersey-result-list').onclick=async event=>{
+    const button=event.target.closest('[data-jersey-decision]');if(!button||busy())return;
+    if(gameChanged)return toast('先に写真の試合設定を保存してください。',true);
+    const row=button.closest('[data-jersey-observation]'),decision=button.dataset.jerseyDecision,personId=row.querySelector('select').value;
+    if(decision==='ok'&&!personId)return toast('この選手の人物を選んでください。',true);
+    const result=await perform(async()=>{if(peopleChanged||selectionChanged){await api('/api/photo',{id,...(peopleChanged?{manualPeople:[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value)}:{}),...(selectionChanged?{selected:$('photo-selected').checked}:{})});peopleChanged=false;selectionChanged=false;}return api('/api/jersey/feedback',{photoId:id,observationId:row.dataset.jerseyObservation,gameId:getPhoto(id)?.jerseyGameId,personId,decision});},{message:'背番号の確認を保存しました。'});
+    if(result&&activePhotoId===id&&$('dialog').open){const live=getPhoto(id);paintJerseyAnswers(live);$('photo-selected').checked=live.selected;$('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.checked=live.matchedIds?.includes(node.value));updateControls();}
+  };
   $('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.onchange=()=>peopleChanged=true);
   $('register-from-photo').onclick=()=>{closeDialog();void openEnrollment(id);};
   if($('analyze-photo'))$('analyze-photo').onclick=()=>void perform(()=>api('/api/analyze',{ids:[id]}),{message:null});
-  $('photo-form').onsubmit=async event=>{event.preventDefault();const fields={id,date:$('photo-date').value,selected:$('photo-selected').checked,blurLabel:$('photo-blur').value||null};if(fields.date&&!validDate(fields.date))return toast('日付を正しく指定してください。',true);if(peopleChanged)fields.manualPeople=[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value);const result=await perform(()=>api('/api/photo',fields));if(result)closeDialog();};
+  $('photo-form').onsubmit=async event=>{event.preventDefault();const fields={id,date:$('photo-date').value,blurLabel:$('photo-blur').value||null};if(selectionChanged)fields.selected=$('photo-selected').checked;if(fields.date&&!validDate(fields.date))return toast('日付を正しく指定してください。',true);if(peopleChanged)fields.manualPeople=[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value);if(gameChanged)fields.jerseyGameId=$('photo-jersey-game').value;const result=await perform(()=>api('/api/photo',fields));if(result)closeDialog();};
   $('face-answer-list').onclick=async event=>{
     const button=event.target.closest('[data-decision]');if(!button||busy())return;
     const card=button.closest('[data-face-id]'),faceId=card.dataset.faceId,personId=card.querySelector('select').value;
     if(!personId)return toast('この顔の人物を選んでください。',true);
     const draftDate=$('photo-date').value,draftBlur=$('photo-blur').value,draftSelected=$('photo-selected').checked;
-    const selectedChanged=draftSelected!==Boolean(getPhoto(id)?.selected),manualPeople=peopleChanged?[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value):null;
+    const selectedChanged=selectionChanged,manualPeople=peopleChanged?[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value):null;
     const result=await perform(async()=>{
-      if(peopleChanged||selectedChanged){await api('/api/photo',{id,...(peopleChanged?{manualPeople}:{}),...(selectedChanged?{selected:draftSelected}:{})});peopleChanged=false;}
+      if(gameChanged){await api('/api/photo',{id,jerseyGameId:$('photo-jersey-game').value});gameChanged=false;}
+      if(peopleChanged||selectedChanged){await api('/api/photo',{id,...(peopleChanged?{manualPeople}:{}),...(selectedChanged?{selected:draftSelected}:{})});peopleChanged=false;selectionChanged=false;}
       return api('/api/feedback',{faceId,personId,decision:button.dataset.decision});
     },{message:'訂正をPCに保存し、人物の分類に反映しました。'});
     if(result&&activePhotoId===id&&$('dialog').open){
-      const live=getPhoto(id);paintFaceAnswers(live);$('photo-answer-status').textContent='訂正を保存しました。次回もこの回答を使います。';
+      const live=getPhoto(id);paintFaceAnswers(live);paintJerseyAnswers(live);$('photo-answer-status').textContent='訂正を保存しました。次回もこの回答を使います。';
       $('photo-date').value=draftDate;$('photo-blur').value=draftBlur;$('photo-selected').checked=live.selected;
       $('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.checked=live.matchedIds?.includes(node.value));updateControls();
     }
   };
   updateControls();
-  try{const image=detailImage?.photoId===id?detailImage.image:await loadImage(id);if(generation!==detailGeneration||activePhotoId!==id)return;detailImage={photoId:id,image};drawScene($('photo-scene'),image,photo.faces||[]);}catch(error){if(generation===detailGeneration)$('photo-answer-status').textContent=error.message;}
+  try{const image=detailImage?.photoId===id?detailImage.image:await loadImage(id);if(generation!==detailGeneration||activePhotoId!==id)return;detailImage={photoId:id,image};drawScene($('photo-scene'),image,photo.faces||[],photo.jerseys||[]);}catch(error){if(generation===detailGeneration)$('photo-answer-status').textContent=error.message;}
+}
+
+function paintJerseyAnswers(photo){
+  if(!$('jersey-result-list'))return;
+  if(photo.jerseyError){$('jersey-result-list').innerHTML=`<p class="hint">${esc(photo.jerseyError)}</p>`;return;}
+  $('jersey-result-list').innerHTML=(photo.jerseys||[]).map((item,index)=>`<article class="jersey-result ${item.status==='review'?'review':''}" data-jersey-observation="${esc(item.id)}"><strong>選手 ${index+1} · 背番号 ${esc(item.number||'読めず')} · ${item.team==='own'?'味方':item.team==='opponent'?'相手':'チーム不明'}${item.personId?' · '+esc(getPerson(item.personId)?.name||''):''}</strong><p>${esc(item.reason||'確認してください。')}</p><select aria-label="背番号の選手 ${index+1}の人物"><option value="">人物を選ぶ</option>${data.people.map(person=>`<option value="${esc(person.id)}" ${person.id===item.personId?'selected':''}>${esc(person.name)}</option>`).join('')}</select><div class="jersey-result-actions"><button type="button" class="primary-button" data-jersey-decision="ok" data-mutates>OK・本人</button><button type="button" class="outline-button" data-jersey-decision="ng" data-mutates>NG・除外</button></div></article>`).join('')||`<p class="hint">${!photo.jerseyGameId?'試合を設定すると、その試合のユニフォーム見本と番号表で判定します。':photo.jerseyScanned?'背番号を確認できませんでした。必要なら写真全体に人物を手動指定してください。':'味方・相手の見本と番号表を登録して、背番号を読み取ってください。'}</p>`;
 }
 
 function paintFaceAnswers(photo){
@@ -371,7 +476,7 @@ async function openEnrollment(id){
   let photo=getPhoto(id);if(!photo)return;
   closeDialog();editorPhotoId=id;$('face-editor-content').innerHTML='<div class="face-editor"><h2>写真を読み込んでいます…</h2></div>';$('face-editor-dialog').showModal();
   try{
-    if(!photo.analyzed){
+    if(!(photo.faceAnalyzed??photo.analyzed)){
       pending++;updateControls();
       try{await api('/api/analyze',{ids:[id]});await waitJob();photo=getPhoto(id);}
       finally{pending--;updateControls();}
@@ -390,7 +495,7 @@ async function openEnrollment(id){
           return {profiles:data.people,personId:savedPerson,message:'顔を登録してPCに保存しました。別の人物も続けて登録できます。'};
         }finally{pending--;updateControls();$('save-status').textContent='PCに保存済み';}
       }});
-    if(!photo.analyzed){
+    if(!(photo.faceAnalyzed??photo.analyzed)){
       const note=document.createElement('p');note.className='hint';note.textContent='まだ解析していない写真です。顔を手動で囲んで登録できます。自動検出する場合は一度閉じて「この写真を解析」を押してください。';$('face-editor-content').prepend(note);
     }
   }catch(error){if($('face-editor-dialog').open)$('face-editor-content').innerHTML=`<div class="dialog-body"><h2>写真を表示できません</h2><p>${esc(error.message)}</p><button class="outline-button" id="close-enroll-error">閉じる</button></div>`;if($('close-enroll-error'))$('close-enroll-error').onclick=closeEnrollment;}
@@ -423,7 +528,7 @@ function help(){
 
 for(const id of ['choose-source','empty-import'])$(id).onclick=()=>void pickSource();
 $('enter-source').onclick=()=>enterSource();$('add-person').onclick=addPerson;$('add-event').onclick=()=>editEvent();
-$('choose-face-photo').onclick=()=>{enrollMode=true;filter='all';page=0;$('person-filter').value='';$('date-filter').value='';document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));renderGallery();$('gallery').scrollIntoView({behavior:'smooth',block:'start'});};
+$('choose-face-photo').onclick=()=>{uniformEnroll=null;$('uniform-notice').hidden=true;enrollMode=true;filter='all';page=0;$('person-filter').value='';$('date-filter').value='';document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));renderGallery();$('gallery').scrollIntoView({behavior:'smooth',block:'start'});};
 $('cancel-enroll').onclick=()=>{enrollMode=false;renderGallery();};
 $('people-list').onclick=event=>{const person=event.target.closest('[data-person]');if(person){currentPerson=person.dataset.person;renderPeople();}};
 $('scan-button').onclick=()=>void perform(()=>api('/api/analyze',{}),{message:null});
@@ -431,7 +536,7 @@ $('event-list').onclick=event=>{const button=event.target.closest('[data-event]'
 $('day-list').onclick=event=>{const add=event.target.closest('[data-day-event]');if(add&&!busy()){const day=add.dataset.dayEvent;return editEvent(data.events.find(item=>day>=item.start&&day<=item.end),day);}const day=event.target.closest('[data-day]');if(day){$('date-filter').value=day.dataset.day;page=0;renderGallery();}};
 $('gallery').onclick=event=>{const button=event.target.closest('[data-photo]');if(button)void openPhoto(button.dataset.photo);};
 $('gallery').onchange=event=>{const id=event.target.dataset.select;if(id){const selected=event.target.checked;void perform(()=>api('/api/photo',{id,selected}),{message:null});}};
-for(const id of ['person-filter','date-filter'])$(id).onchange=()=>{page=0;renderGallery();};
+for(const id of ['person-filter','date-filter','game-filter'])$(id).onchange=()=>{page=0;renderGallery();updateControls();};
 document.querySelectorAll('[data-filter]').forEach(button=>button.onclick=()=>{filter=button.dataset.filter;page=0;document.querySelectorAll('[data-filter]').forEach(node=>node.classList.toggle('active',node===button));renderGallery();});
 for(const [id,selected] of [['select-visible',true],['clear-visible',false]])$(id).onclick=()=>void perform(async()=>{for(const photo of visible())if(!photo.error)await api('/api/photo',{id:photo.id,selected});},{message:null});
 $('prev-page').onclick=()=>{page--;renderGallery();};$('next-page').onclick=()=>{page++;renderGallery();};
