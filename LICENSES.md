@@ -10,7 +10,12 @@ This application includes the following unmodified, pinned browser assets. Runti
 | tslib helpers, bundled in face-api.js | 1.11.1-era dependency | [microsoft/tslib](https://github.com/microsoft/tslib/tree/1.11.1) | [License](licenses/tslib-LICENSE.txt), [copyright notice](licenses/tslib-CopyrightNotice.txt) |
 | fflate browser UMD | 0.8.2 | [101arrowz/fflate](https://github.com/101arrowz/fflate/tree/v0.8.2) | [MIT](licenses/fflate-LICENSE.txt) |
 | exifr full browser UMD | 7.1.3 | [MikeKovarik/exifr](https://github.com/MikeKovarik/exifr/tree/v7.1.3) | [MIT](licenses/exifr-LICENSE.txt) |
+| ONNX Runtime Web WASM bundle and runtime, diagnostic page only | 1.23.2 | [microsoft/onnxruntime](https://github.com/microsoft/onnxruntime/tree/v1.23.2) | [MIT](licenses/onnxruntime-LICENSE.txt), [third-party notices](licenses/onnxruntime-ThirdPartyNotices.txt) |
+| YuNet face detection model, diagnostic page only | 2023mar | [OpenCV Zoo YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) | [MIT](licenses/YuNet-LICENSE.txt) |
+| SFace face recognition model, diagnostic page only | 2021dec | [OpenCV Zoo SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) | [Apache-2.0](licenses/SFace-LICENSE.txt) |
 
 `asset-lock.json` records each asset's upstream URL, byte size, and SHA-256 digest. The digests were calculated from the downloaded upstream files. The fflate and exifr npm package tarballs were additionally verified against their published npm SHA-512 integrity values before extracting the exact UMD and license files.
+
+The ONNX Runtime Web npm tarball was also verified against its published SHA-512 integrity value. The diagnostic page pins both ONNX model hashes in its engine identifier and never mixes descriptors from different models or preprocessing versions. The models are comparison candidates; their upstream benchmarks do not establish accuracy on this application's users or child photographs.
 
 face-api.js is copyright 2018 Vincent Mühler; fflate is copyright 2023 Arjun Barrett; exifr's copyright notice is retained in its license file. The complete licenses and notices are distributed in the `licenses/` directory.

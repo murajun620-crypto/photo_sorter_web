@@ -3,3 +3,6 @@ models/*-shard* binary
 models/*-weights_manifest.json -text
 vendor/* -text -whitespace
 licenses/* -text -whitespace
+models-v2/*.onnx binary
+vendor/ort/* -text -whitespace
+vendor/ort/*.wasm binary
