@@ -1,6 +1,8 @@
-import {loadModels, decodeImage, detectFaces, faceDistance, blurScore, compressToTarget} from './imaging.js';
-import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js';
-import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js';
+import {loadModels, decodeImage, detectFaces, faceDistance, blurScore, compressToTarget} from './imaging.js?v=1.0.1';
+import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js?v=1.0.1';
+import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js?v=1.0.1';
+import {createThumbnailQueue} from './thumbnails.js?v=1.0.1';
+import {CURRENT_VERSION, installUpdates} from './updates.js?v=1.0.1';
 
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -12,6 +14,34 @@ const state = {profiles:[], activePerson:null, events:[], records:[], source:nul
 const perPage = 48;
 let toastTimer;
 let dialogResolve;
+let updatingApp = false;
+const imageBlobs = new Map();
+const thumbnails = createThumbnailQueue({
+  getRecords:()=>state.records,
+  getVisibleRecords:visible,
+  isPaused:()=>state.busy,
+  async makeThumbnail(record){
+    let decoded;
+    try{
+      const file=record.handle?await verifyUnchanged(record):record.file;
+      decoded=await decodeImage(file);
+      const url=await canvasURL(decoded.canvas);
+      return {url,blob:imageBlobs.get(url)};
+    }finally{decoded?.close();}
+  },
+  publish(record,{url,blob}){record.thumbnail=url;record.thumbnailBlob=blob;delete record.thumbnailError;patchThumbnail(record);},
+  onError(record,error){record.thumbnailError=error.message||'プレビューを表示できません';patchThumbnail(record);},
+  revoke:releaseImageURL,
+});
+
+function imageURL(blob){const url=URL.createObjectURL(blob);imageBlobs.set(url,blob);return url;}
+function releaseImageURL(url){if(url){URL.revokeObjectURL(url);imageBlobs.delete(url);}}
+function patchThumbnail(record){
+  const button=$('gallery').querySelector(`[data-photo="${record.id}"]`);
+  if(!button)return;
+  if(record.thumbnail){const img=document.createElement('img');img.loading='lazy';img.src=record.thumbnail;img.alt=record.file.name;button.replaceChildren(img);}
+  else{const label=document.createElement('span');label.className='thumbnail-placeholder';label.textContent='プレビュー不可';label.title=record.thumbnailError;button.replaceChildren(label);}
+}
 
 try {
   const saved = JSON.parse(localStorage.getItem(EVENT_KEY) || '[]');
@@ -42,7 +72,7 @@ async function job(title, action) {
   progress(0,0,'');
   $('progress-dock').hidden = false;
   updateControls();
-  try { return await action(state.controller.signal); }
+  try { await thumbnails.waitForIdle();return await action(state.controller.signal); }
   catch (error) { if (error.name !== 'AbortError') notify(error.message || String(error),true); }
   finally {
     state.busy = false;
@@ -83,6 +113,7 @@ function updateControls() {
   $('quarantine').disabled=pending||!state.source||!state.records.some(r=>r.blurry);
   $('restore').disabled=pending||!state.source;
   $('cancel').disabled=!pending;
+  $('check-update').disabled=pending;
 }
 
 function closeDialog(value=null) {
@@ -120,7 +151,7 @@ async function editPerson(person=null) {
     closeDialog(true);render();
   };
   if(person)$('delete-person').onclick=()=>{
-    for(const ref of person.refs)URL.revokeObjectURL(ref.url);
+    for(const ref of person.refs)releaseImageURL(ref.url);
     state.profiles=state.profiles.filter(p=>p.id!==person.id);
     if(state.activePerson===person.id)state.activePerson=state.profiles[0]?.id||null;
     invalidateAnalysis();closeDialog(true);
@@ -148,7 +179,7 @@ async function canvasURL(canvas,width=280,height=200,crop=null) {
   const blob=await new Promise(resolve=>output.toBlob(resolve,'image/jpeg',.82));
   output.width=output.height=1;
   if(!blob)throw new Error('サムネイルを作成できません。');
-  return URL.createObjectURL(blob);
+  return imageURL(blob);
 }
 
 async function addReferences(files) {
@@ -178,7 +209,7 @@ async function addReferences(files) {
           renderPeople();
         }
       }catch(error){notify(`${file.name}: ${error.message}`,true);}
-      finally{decoded?.close();urls.forEach(url=>URL.revokeObjectURL(url));}
+      finally{decoded?.close();urls.forEach(releaseImageURL);}
     }
     if(added){invalidateAnalysis();notify(`${person.name}の顔写真を${added}枚追加しました。`);}
   });
@@ -217,7 +248,7 @@ function renderDates() {
   $('day-count').textContent=dates.size;
 }
 
-function clearRecords(){state.records.forEach(record=>{if(record.thumbnail)URL.revokeObjectURL(record.thumbnail);});state.records=[];state.page=0;state.analyzedMode=null;}
+function clearRecords(){thumbnails.reset();state.records.forEach(record=>releaseImageURL(record.thumbnail));state.records=[];state.page=0;state.analyzedMode=null;}
 
 async function loadSource(){
   if(state.busy)return;
@@ -262,8 +293,8 @@ async function scan(){
       try{
         const file=record.handle?await verifyUnchanged(record):record.file;
         decoded=await decodeImage(file);
-        if(record.thumbnail)URL.revokeObjectURL(record.thumbnail);
-        record.thumbnail=await canvasURL(decoded.canvas);
+        if(!record.thumbnail){record.thumbnail=await canvasURL(decoded.canvas);record.thumbnailBlob=imageBlobs.get(record.thumbnail);}
+        delete record.thumbnailError;
         if(!record.manualDate)Object.assign(record,await photoDate(file));
         record.width=decoded.width;record.height=decoded.height;
         const faces=opts.useFaces?await detectFaces(decoded.canvas):[];
@@ -301,7 +332,7 @@ function renderGallery(){
   const filteredRecords=filtered();
   state.page=Math.min(state.page,Math.max(0,Math.ceil(filteredRecords.length/perPage)-1));
   const records=visible();
-  $('gallery').innerHTML=records.map(record=>`<article class="photo-card ${record.selected?'selected':''}"><button class="photo-image" data-photo="${record.id}" aria-label="${escape(record.relative)}を確認">${record.thumbnail?`<img loading="lazy" src="${record.thumbnail}" alt="${escape(record.file.name)}">`:`<span class="error-symbol">${record.error?'!':'▧'}</span>`}</button><label class="card-checkbox"><input type="checkbox" data-select="${record.id}" ${record.selected?'checked':''} ${state.busy||!record.analyzed||record.error?'disabled':''} aria-label="${escape(record.relative)}を出力対象に"></label>${record.blurry?'<span class="blur-badge">ボケ候補</span>':''}<div class="card-info"><div class="card-name" title="${escape(record.relative)}">${escape(record.file.name)}</div><div class="card-meta"><span>${escape(record.date)}</span><span>${size(record.file.size)}</span></div><div class="card-people">${record.error?'<span class="person-tag neutral">読み込みエラー</span>':!record.analyzed?'<span class="person-tag neutral">未解析</span>':record.matchedIds?.length?state.profiles.filter(p=>record.matchedIds.includes(p.id)).map(p=>`<span class="person-tag">${escape(p.name)}</span>`).join(''):`<span class="person-tag neutral">${state.analyzedMode?'人物未分類':'日付で整理'}</span>`}</div></div></article>`).join('');
+  $('gallery').innerHTML=records.map(record=>`<article class="photo-card ${record.selected?'selected':''}"><button class="photo-image" data-photo="${record.id}" aria-label="${escape(record.relative)}を確認">${record.thumbnail?`<img loading="lazy" src="${record.thumbnail}" alt="${escape(record.file.name)}">`:`<span class="thumbnail-placeholder" title="${escape(record.thumbnailError||'')}">${record.error?'読み込みエラー':record.thumbnailError?'プレビュー不可':'プレビュー準備中'}</span>`}</button><label class="card-checkbox"><input type="checkbox" data-select="${record.id}" ${record.selected?'checked':''} ${state.busy||!record.analyzed||record.error?'disabled':''} aria-label="${escape(record.relative)}を出力対象に"></label>${record.blurry?'<span class="blur-badge">ボケ候補</span>':''}<div class="card-info"><div class="card-name" title="${escape(record.relative)}">${escape(record.file.name)}</div><div class="card-meta"><span>${escape(record.date)}</span><span>${size(record.file.size)}</span></div><div class="card-people">${record.error?'<span class="person-tag neutral">読み込みエラー</span>':!record.analyzed?'<span class="person-tag neutral">未解析</span>':record.matchedIds?.length?state.profiles.filter(p=>record.matchedIds.includes(p.id)).map(p=>`<span class="person-tag">${escape(p.name)}</span>`).join(''):`<span class="person-tag neutral">${state.analyzedMode?'人物未分類':'日付で整理'}</span>`}</div></div></article>`).join('');
   $('empty-state').hidden=!!state.records.length;
   $('pagination').hidden=filteredRecords.length<=perPage;
   $('page-label').textContent=`${state.page+1} / ${Math.max(1,Math.ceil(filteredRecords.length/perPage))}`;
@@ -312,6 +343,7 @@ function renderGallery(){
   $('selected-count').textContent=state.records.filter(r=>r.selected).length;
   $('blur-count').textContent=state.records.filter(r=>r.blurry).length;
   updateControls();
+  thumbnails.refresh();
 }
 
 function render(){
@@ -418,7 +450,7 @@ async function quarantineDialog(){
     await job('ボケ候補を退避しています',async signal=>{
       const result=await quarantineRecords(records,state.source,{signal,onProgress:progress});
       const removed=new Set(result.ids);
-      for(const record of state.records.filter(r=>removed.has(r.id)))if(record.thumbnail)URL.revokeObjectURL(record.thumbnail);
+      for(const record of state.records.filter(r=>removed.has(r.id)))releaseImageURL(record.thumbnail);
       state.records=state.records.filter(r=>!removed.has(r.id));
       resultDialog('退避の結果',`${result.quarantined}枚を退避しました。\n「退避した写真を復元」から戻せます。`,result.errors);
     });
@@ -438,6 +470,46 @@ async function restore(){
 function help(){dialog(`<div class="dialog-body"><h2>写真の整理から、友達へのおすそわけまで。</h2><ol class="help-list"><li><strong>人物を追加</strong>して、その人の顔写真を登録。集合写真では顔をクリックします。人物ごとに数枚あると選びやすくなります。</li><li><strong>写真フォルダを開く → 写真を解析</strong>。顔の候補とボケの目安を計算します。写真をクリックして人物・日付を修正できます。</li><li><strong>イベントを登録</strong>。日帰りは1日、旅行は開始日〜終了日を指定。日付の重複するイベントは作れません。</li><li><strong>フォルダへ出力 / ZIPで保存</strong>。人物ごとに分けると、集合写真は写っている各人へコピー。各フォルダ内をイベント・日付で整理します。</li></ol><p>写真と顔の特徴量は端末内で処理し、サーバーに送信しません。顔の登録はタブを閉じると消去。イベント名と期間はこのブラウザだけに保存します。判定は目安なので、配る前に画像をご確認ください。</p><p>撮影日がない写真はファイル更新日を表示します。圧縮は指定容量以下のJPEG、1 MB = 1,000,000バイト。圧縮しない場合は元ファイルをコピーします。直接フォルダ出力と退避・復元はChrome / Edgeに対応します。</p></div>${actions('')}`);}
 
 function listen(id,event,fn){$(id).addEventListener(event,fn);}
+const savedControlIds=['use-faces','distance','skip-blur','blur-threshold','compress','target-size','target-unit','allow-resize','export-mode','person-filter','date-filter'];
+
+async function getUpdateSnapshot(){
+  await thumbnails.waitForIdle();
+  return {schema:1,profiles:state.profiles.map(person=>({...person,refs:person.refs.map(ref=>({descriptor:ref.descriptor,blob:imageBlobs.get(ref.url)}))})),
+    records:state.records.map(record=>({...record,thumbnail:null,thumbnailBlob:record.thumbnailBlob||imageBlobs.get(record.thumbnail)})),
+    activePerson:state.activePerson,events:state.events,source:state.source,sourceName:state.sourceName,filter:state.filter,page:state.page,analyzedMode:state.analyzedMode,
+    controls:Object.fromEntries(savedControlIds.map(id=>[id,$(id).type==='checkbox'?$(id).checked:$(id).value])),scrollY:window.scrollY};
+}
+
+async function applyUpdateSnapshot(snapshot){
+  if(snapshot?.schema!==1||!Array.isArray(snapshot.profiles)||!Array.isArray(snapshot.records)||!Array.isArray(snapshot.events))throw new Error('一時保存データの形式が違います。');
+  const urls=[];
+  let profiles,records;
+  const events=[];
+  const validId=id=>typeof id==='string'&&/^[a-f0-9-]{36}$/i.test(id);
+  const restoreURL=blob=>{const url=imageURL(blob);urls.push(url);return url;};
+  try{
+    profiles=snapshot.profiles.map(person=>{
+      if(!validId(person.id)||typeof person.name!=='string'||!Array.isArray(person.refs))throw new Error('人物登録を確認できません。');
+      return {...person,refs:person.refs.map(ref=>{if(!(ref.blob instanceof Blob)||!ref.descriptor?.length)throw new Error('登録した顔写真を復元できません。');return {descriptor:Float32Array.from(ref.descriptor),url:restoreURL(ref.blob)};})};
+    });
+    records=snapshot.records.map(record=>{
+      if(!validId(record.id)||!(record.file instanceof Blob)||typeof record.file.name!=='string'||!Array.isArray(record.parts))throw new Error('読み込んだ写真を確認できません。');
+      return {...record,thumbnail:record.thumbnailBlob instanceof Blob?restoreURL(record.thumbnailBlob):null};
+    });
+    for(const event of snapshot.events)events.push(validateEvent(event,events));
+  }catch(error){urls.forEach(releaseImageURL);throw error;}
+  clearRecords();
+  for(const person of state.profiles)for(const ref of person.refs)releaseImageURL(ref.url);
+  Object.assign(state,{profiles,records,events,source:snapshot.source||null,sourceName:String(snapshot.sourceName||''),activePerson:snapshot.activePerson,
+    filter:['all','selected','blur','error'].includes(snapshot.filter)?snapshot.filter:'all',page:Math.max(0,Number(snapshot.page)||0),analyzedMode:snapshot.analyzedMode??null});
+  for(const id of savedControlIds){if(id in (snapshot.controls||{})){if($(id).type==='checkbox')$(id).checked=!!snapshot.controls[id];else $(id).value=snapshot.controls[id];}}
+  saveEvents();render();
+  for(const id of ['person-filter','date-filter'])if(snapshot.controls?.[id])$(id).value=snapshot.controls[id];
+  document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter===state.filter));
+  renderGallery();
+  requestAnimationFrame(()=>window.scrollTo(0,Math.max(0,Number(snapshot.scrollY)||0)));
+}
+
 listen('add-person','click',()=>editPerson());
 listen('people-list','click',event=>{
   if(state.busy)return;
@@ -448,7 +520,7 @@ listen('people-list','click',event=>{
 listen('people-list','keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.target.click();}});
 listen('add-reference','click',()=>$('reference-files').click());
 listen('reference-files','change',async event=>{const files=[...event.target.files];event.target.value='';await addReferences(files);});
-listen('reference-list','click',event=>{const button=event.target.closest('[data-remove-ref]');if(!button||state.busy)return;const person=state.profiles.find(p=>p.id===state.activePerson);URL.revokeObjectURL(person.refs[Number(button.dataset.removeRef)].url);person.refs.splice(Number(button.dataset.removeRef),1);invalidateAnalysis();});
+listen('reference-list','click',event=>{const button=event.target.closest('[data-remove-ref]');if(!button||state.busy)return;const person=state.profiles.find(p=>p.id===state.activePerson);releaseImageURL(person.refs[Number(button.dataset.removeRef)].url);person.refs.splice(Number(button.dataset.removeRef),1);invalidateAnalysis();});
 listen('new-event','click',()=>editEvent());
 listen('event-list','click',event=>{const button=event.target.closest('[data-event]');if(button)editEvent(state.events.find(e=>e.id===button.dataset.event));});
 listen('day-list','click',event=>{const edit=event.target.closest('[data-day-event]');if(edit)return editEvent(eventForDate(edit.dataset.dayEvent,state.events),edit.dataset.dayEvent);const day=event.target.closest('[data-day-filter]');if(day){$('date-filter').value=day.dataset.dayFilter;state.page=0;renderGallery();}});
@@ -474,5 +546,14 @@ listen('export-folder','click',exportFolder);listen('export-zip','click',exportZ
 listen('quarantine','click',quarantineDialog);listen('restore','click',restore);
 listen('cancel','click',()=>{state.controller?.abort();closeDialog();$('progress-detail').textContent='中止しています。完了した出力は残ります。';});
 listen('help-button','click',help);
-window.addEventListener('beforeunload',event=>{if(state.busy){event.preventDefault();event.returnValue='';}});
+listen('close-updates','click',()=>$('update-dialog').close());
+window.addEventListener('beforeunload',event=>{if(state.busy&&!updatingApp){event.preventDefault();event.returnValue='';}});
+document.querySelectorAll('[data-app-version]').forEach(element=>element.textContent=`v${CURRENT_VERSION}`);
 render();
+void installUpdates({
+  versionElement:$('app-version'),checkButton:$('check-update'),statusElement:$('update-status'),restartButton:$('restart-update'),retryButton:$('retry-update-restore'),
+  getSnapshot:getUpdateSnapshot,applySnapshot:applyUpdateSnapshot,canUpdate:()=>!state.busy&&!$('dialog').open,
+  onCheck:()=>{if(!$('update-dialog').open)$('update-dialog').showModal();},
+  onError:text=>{notify(text,true);if(!$('update-dialog').open)$('update-dialog').showModal();},
+  onBusy:value=>{updatingApp=value;state.busy=value;updateControls();if(!value)render();},
+}).catch(error=>notify(error.message,true));

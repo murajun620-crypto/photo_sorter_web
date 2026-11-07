@@ -8,15 +8,17 @@
   <meta name="referrer" content="no-referrer">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./style.css?v=1.0.1">
   <script defer src="./vendor/face-api.min.js"></script>
   <script defer src="./vendor/exifr.js"></script>
   <script defer src="./vendor/fflate.js"></script>
-  <script type="module" src="./src/app.js"></script>
+  <script type="module" src="./src/app.js?v=1.0.1"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>WEB</small></span></a>
+    <span id="app-version" class="app-version">v1.0.1</span>
+    <button id="check-update" class="update-check" type="button">更新確認</button>
     <span class="tagline">写真を、渡したい人へ。</span>
     <div class="private-badge"><span></span>写真はこの端末だけで処理</div>
     <button class="text-button" id="help-button" aria-label="使い方を開く">使い方</button>
@@ -55,7 +57,7 @@
         <label class="check-line"><input id="allow-resize" type="checkbox" checked> 必要なら解像度を下げる</label>
         <p class="hint">圧縮時は撮影情報・位置情報を除去。透明部分は白になります。</p>
       </section>
-      <div class="sidebar-footer">v1.0.0 · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
+      <div class="sidebar-footer"><span data-app-version>v1.0.1</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
     </aside>
     <main>
       <section class="intro">
@@ -85,5 +87,6 @@
   <div class="progress-dock" id="progress-dock" hidden><div><strong id="progress-title">処理中</strong><small id="progress-detail"></small></div><progress id="progress-bar" max="100" value="0"></progress><button id="cancel" class="outline-button">中止</button></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <dialog id="update-dialog" aria-labelledby="update-heading"><div class="dialog-body"><h2 id="update-heading">アプリの更新</h2><p id="update-status" role="status">最新バージョンを確認します。</p><p>「更新して再開」で、読み込んだ写真・人物登録・選択・設定をこのブラウザに一時保存して引き継ぎます。</p></div><div class="dialog-actions"><button id="close-updates" class="outline-button" type="button">閉じる</button><button id="retry-update-restore" class="outline-button" type="button" hidden>復元を再試行</button><button id="restart-update" class="primary-button" type="button" hidden>更新して再開</button></div></dialog>
 </body>
 </html>
