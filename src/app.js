@@ -1,8 +1,10 @@
-import {loadModels, decodeImage, detectFaces, faceDistance, blurScore, compressToTarget} from './imaging.js?v=1.0.1';
-import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js?v=1.0.1';
-import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js?v=1.0.1';
-import {createThumbnailQueue} from './thumbnails.js?v=1.0.1';
-import {CURRENT_VERSION, installUpdates} from './updates.js?v=1.0.1';
+import {loadModels, decodeImage, detectFaces, faceDistance, blurScore, compressToTarget} from './imaging.js?v=1.0.2';
+import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js?v=1.0.2';
+import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js?v=1.0.2';
+import {createThumbnailQueue} from './thumbnails.js?v=1.0.2';
+import {CURRENT_VERSION, installUpdates} from './updates.js?v=1.0.2';
+import {mountFaceEditor} from './face-editor.js?v=1.0.2';
+import {descriptorFromRegion} from './face-regions.js?v=1.0.2';
 
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -10,7 +12,7 @@ const uid = () => crypto.randomUUID();
 const size = bytes => bytes >= 1e6 ? `${(bytes/1e6).toFixed(2)} MB` : `${Math.round(bytes/1000)} KB`;
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const EVENT_KEY = `photo-sorter-events-v1:${location.pathname}`;
-const state = {profiles:[], activePerson:null, events:[], records:[], source:null, sourceName:'', filter:'all', page:0, busy:false, controller:null, analyzedMode:null};
+const state = {profiles:[], activePerson:null, events:[], records:[], source:null, sourceName:'', filter:'all', page:0, busy:false, controller:null, analyzedMode:null,pickFacePhoto:false};
 const perPage = 48;
 let toastTimer;
 let dialogResolve;
@@ -106,6 +108,7 @@ function updateControls() {
   }
   $('scan-button').disabled=pending||!state.records.length;
   $('add-reference').disabled=pending||!state.profiles.length;
+  $('choose-face-photo').disabled=pending||!state.records.length;
   for (const id of ['select-visible','clear-visible','reclassify']) $(id).disabled=pending||!state.records.some(r=>r.analyzed);
   const selected=state.records.some(r=>r.selected&&!r.error);
   $('export-folder').disabled=pending||!selected||!state.source||!window.showDirectoryPicker;
@@ -135,6 +138,8 @@ $('dialog').addEventListener('click',event=>{if(event.target.closest('[data-clos
 function invalidateAnalysis() {
   for (const record of state.records) { record.analyzed=false; record.selected=false; record.faces=[]; record.distances={}; record.matchedIds=[]; record.manualPeople=null; record.blurry=false; record.error=null; }
   state.analyzedMode=null;
+  state.filter='all';state.page=0;$('person-filter').value='';
+  document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));
   render();
 }
 
@@ -161,9 +166,9 @@ async function editPerson(person=null) {
 }
 
 function renderPeople() {
-  $('people-list').innerHTML=state.profiles.length ? state.profiles.map(p=>`<div class="person ${p.id===state.activePerson?'active':''}" data-person="${p.id}" tabindex="0" role="button" aria-label="${escape(p.name)}を選択"><span class="avatar">${escape(p.name.slice(0,1))}</span><span class="person-label">${escape(p.name)}<small>顔写真 ${p.refs.length}枚</small></span><button class="tiny-button" data-edit-person="${p.id}" aria-label="${escape(p.name)}の設定">⋯</button></div>`).join('') : '<p class="hint">「＋ 追加」から人物を登録してください。</p>';
+  $('people-list').innerHTML=state.profiles.length ? state.profiles.map(p=>`<div class="person ${p.id===state.activePerson?'active':''}" data-person="${p.id}" tabindex="0" role="button" aria-label="${escape(p.name)}を選択"><span class="avatar">${escape(p.name.slice(0,1))}</span><span class="person-label">${escape(p.name)}<small>顔写真 ${p.refs.length}枚</small></span><button class="tiny-button" data-edit-person="${p.id}" aria-label="${escape(p.name)}の設定">⋯</button></div>`).join('') : '<p class="hint">写真を開き、写っている顔を選んで人物を登録できます。</p>';
   const active=state.profiles.find(p=>p.id===state.activePerson);
-  $('add-reference').textContent=active?`${active.name}の顔写真を追加`:'顔写真を追加';
+  $('add-reference').textContent=active?`${active.name}：別の写真から追加`:'別の写真ファイルから追加';
   $('reference-list').innerHTML=(active?.refs||[]).map((ref,i)=>`<div class="reference"><img src="${ref.url}" alt="登録した顔 ${i+1}"><button data-remove-ref="${i}" aria-label="顔写真${i+1}を外す">×</button></div>`).join('');
   const filter=$('person-filter').value;
   $('person-filter').innerHTML='<option value="">すべての人物</option>'+state.profiles.map(p=>`<option value="${p.id}">${escape(p.name)}</option>`).join('');
@@ -215,6 +220,71 @@ async function addReferences(files) {
   });
 }
 
+async function registerPeopleFromPhoto(record){
+  if(state.busy)return;
+  state.pickFacePhoto=false;
+  render();
+  await job('写真から人物を登録',async signal=>{
+    let decoded,editor,detection,finish;
+    let active=true,added=0;
+    const editorDialog=$('face-editor-dialog');
+    const abortError=()=>new DOMException('登録を中止しました。','AbortError');
+    const closed=new Promise(resolve=>finish=()=>{if(!active)return;active=false;if(editorDialog.open)editorDialog.close();resolve();});
+    const cancel=event=>{event.preventDefault();finish();};
+    const profileOptions=()=>state.profiles.map(({id,name})=>({id,name}));
+    signal.addEventListener('abort',finish);
+    editorDialog.addEventListener('cancel',cancel);
+    editorDialog.addEventListener('close',finish);
+    try{
+      await loadModels(text=>progress(0,0,text));
+      if(signal.aborted)return;
+      const file=record.handle?await verifyUnchanged(record):record.file;
+      decoded=await decodeImage(file);
+      if(signal.aborted)return;
+      editor=mountFaceEditor({container:$('face-editor-content'),canvas:decoded.canvas,faces:[],profiles:profileOptions(),activePersonId:state.activePerson,
+        onClose:finish,onError:error=>notify(error?.message||String(error),true),
+        async onRegister({personId,name,face,region}){
+          if(!active||signal.aborted)throw abortError();
+          let person=personId?state.profiles.find(p=>p.id===personId):null;
+          if(personId&&!person)throw new Error('登録先の人物を選び直してください。');
+          const newName=String(name||'').trim().slice(0,60);
+          if(!person){
+            if(!newName)throw new Error('新しい人物の名前を入力してください。');
+            if(state.profiles.some(p=>safeName(p.name).toLocaleLowerCase()===safeName(newName).toLocaleLowerCase()))throw new Error('同じ名前の人物が登録済みです。登録先からその人物を選んでください。');
+          }
+          const selected=face?.descriptor?face:await descriptorFromRegion(decoded.canvas,region);
+          if(!active||signal.aborted)throw abortError();
+          const distance=person?faceDistance([selected.descriptor],person.refs.map(ref=>ref.descriptor)):null;
+          if(distance!==null&&distance<1e-6)return {profiles:profileOptions(),personId:person.id,message:'この顔はすでに登録されています。別の顔を選んでください。'};
+          const url=await canvasURL(decoded.canvas,80,80,selected.box);
+          if(!active||signal.aborted){releaseImageURL(url);throw abortError();}
+          if(!person){person={id:uid(),name:newName,refs:[]};state.profiles.push(person);}
+          person.refs.push({descriptor:Float32Array.from(selected.descriptor),url});
+          state.activePerson=person.id;added++;
+          invalidateAnalysis();
+          return {profiles:profileOptions(),personId:person.id,message:`${person.name}に顔写真を登録しました。次の顔も続けて登録できます。`};
+        },
+      });
+      editor.setStatus('顔を検出しています。見つからない顔は「顔を囲んで指定」で選べます。');
+      editorDialog.showModal();
+      progress(0,0,record.relative);
+      detection=detectFaces(decoded.canvas).then(faces=>{
+        if(active){editor.setFaces(faces);editor.setStatus(faces.length?`${faces.length}人の顔が見つかりました。枠を選び、登録先を指定してください。`:'顔が見つかりませんでした。「顔を囲んで指定」で1人の顔を囲んでください。');}
+      }).catch(error=>{if(active)editor.setStatus(error.message,true);});
+      await closed;
+    }finally{
+      active=false;
+      if(editorDialog.open)editorDialog.close();
+      signal.removeEventListener('abort',finish);
+      editorDialog.removeEventListener('cancel',cancel);
+      editorDialog.removeEventListener('close',finish);
+      await detection;
+      editor?.destroy();decoded?.close();$('face-editor-content').replaceChildren();
+    }
+    if(added)notify(`${added}件の顔を登録しました。「写真を解析」で人物を選別できます。`);
+  });
+}
+
 function saveEvents(){
   try{localStorage.setItem(EVENT_KEY,JSON.stringify(state.events));}
   catch{notify('イベントの自動保存ができません。設定を書き出してください。',true);}
@@ -248,7 +318,7 @@ function renderDates() {
   $('day-count').textContent=dates.size;
 }
 
-function clearRecords(){thumbnails.reset();state.records.forEach(record=>releaseImageURL(record.thumbnail));state.records=[];state.page=0;state.analyzedMode=null;}
+function clearRecords(){thumbnails.reset();state.records.forEach(record=>releaseImageURL(record.thumbnail));state.records=[];state.page=0;state.analyzedMode=null;state.pickFacePhoto=false;}
 
 async function loadSource(){
   if(state.busy)return;
@@ -353,6 +423,7 @@ function render(){
   $('folder-preview').textContent=$('export-mode').value==='people'&&$('use-faces').checked?'人物名 / イベントの期間と名前 / 日付 / 写真':'イベントの期間と名前 / 日付 / 写真';
   $('browser-note').hidden=!!window.showDirectoryPicker&&(!!state.source||!state.records.length);
   $('browser-note').textContent='この読み込み方法ではZIPで保存できます。フォルダへの直接出力・元写真の退避には、Chrome / Edgeで「写真フォルダを開く」を使ってください。';
+  $('face-photo-notice').hidden=!state.pickFacePhoto;
 }
 
 async function photoDialog(record){
@@ -360,7 +431,8 @@ async function photoDialog(record){
   let file;
   try{file=record.handle?await verifyUnchanged(record):record.file;}catch(error){return notify(error.message,true);}
   const url=URL.createObjectURL(file);
-  const done=dialog(`<form id="photo-form"><div class="dialog-body"><h2>写真を確認</h2><img class="photo-detail-image" src="${url}" alt="${escape(record.file.name)}"><div class="detail-info">${escape(record.relative)}<br>${record.width||'?'} × ${record.height||'?'} px · ${size(file.size)} · 鮮明度 ${Number.isFinite(record.sharpness)?record.sharpness.toFixed(1):'—'}<br>${escape(record.error||record.dateSource||'')}</div><label class="dialog-field">分類する日付<input type="date" id="photo-date" value="${validDate(record.date)?record.date:''}"></label><p>写っている人物を確認・修正できます。顔の数値は距離で、小さいほど近い顔です。</p><div class="detail-pills">${state.profiles.map(p=>`<label><input type="checkbox" name="photo-person" value="${p.id}" ${record.matchedIds?.includes(p.id)?'checked':''}>${escape(p.name)} <small>${record.distances?.[p.id]!=null?record.distances[p.id].toFixed(3):'—'}</small></label>`).join('')}</div><label class="check-line"><input id="photo-selected" type="checkbox" ${record.selected?'checked':''} ${record.error||!record.analyzed?'disabled':''}> この写真を出力する</label></div>${actions('<button type="submit" class="primary-button">変更を保存</button>')}</form>`);
+  const done=dialog(`<form id="photo-form"><div class="dialog-body"><h2>写真を確認</h2><img class="photo-detail-image" src="${url}" alt="${escape(record.file.name)}"><div class="photo-enroll-action"><button id="register-from-photo" class="outline-button" type="button">この写真から人物を登録</button><span class="hint">顔の枠を選択、または手動で囲んで登録できます。</span></div><div class="detail-info">${escape(record.relative)}<br>${record.width||'?'} × ${record.height||'?'} px · ${size(file.size)} · 鮮明度 ${Number.isFinite(record.sharpness)?record.sharpness.toFixed(1):'—'}<br>${escape(record.error||record.dateSource||'')}</div><label class="dialog-field">分類する日付<input type="date" id="photo-date" value="${validDate(record.date)?record.date:''}"></label><p>写っている人物を確認・修正できます。顔の数値は距離で、小さいほど近い顔です。</p><div class="detail-pills">${state.profiles.map(p=>`<label><input type="checkbox" name="photo-person" value="${p.id}" ${record.matchedIds?.includes(p.id)?'checked':''}>${escape(p.name)} <small>${record.distances?.[p.id]!=null?record.distances[p.id].toFixed(3):'—'}</small></label>`).join('')}</div><label class="check-line"><input id="photo-selected" type="checkbox" ${record.selected?'checked':''} ${record.error||!record.analyzed?'disabled':''}> この写真を出力する</label></div>${actions('<button type="submit" class="primary-button">変更を保存</button>')}</form>`);
+  $('register-from-photo').onclick=()=>{closeDialog();void registerPeopleFromPhoto(record);};
   $('photo-form').onsubmit=e=>{
     e.preventDefault();const date=$('photo-date').value;
     if(!validDate(date))return notify('日付を正しく入力してください。',true);
@@ -467,7 +539,7 @@ async function restore(){
   });
 }
 
-function help(){dialog(`<div class="dialog-body"><h2>写真の整理から、友達へのおすそわけまで。</h2><ol class="help-list"><li><strong>人物を追加</strong>して、その人の顔写真を登録。集合写真では顔をクリックします。人物ごとに数枚あると選びやすくなります。</li><li><strong>写真フォルダを開く → 写真を解析</strong>。顔の候補とボケの目安を計算します。写真をクリックして人物・日付を修正できます。</li><li><strong>イベントを登録</strong>。日帰りは1日、旅行は開始日〜終了日を指定。日付の重複するイベントは作れません。</li><li><strong>フォルダへ出力 / ZIPで保存</strong>。人物ごとに分けると、集合写真は写っている各人へコピー。各フォルダ内をイベント・日付で整理します。</li></ol><p>写真と顔の特徴量は端末内で処理し、サーバーに送信しません。顔の登録はタブを閉じると消去。イベント名と期間はこのブラウザだけに保存します。判定は目安なので、配る前に画像をご確認ください。</p><p>撮影日がない写真はファイル更新日を表示します。圧縮は指定容量以下のJPEG、1 MB = 1,000,000バイト。圧縮しない場合は元ファイルをコピーします。直接フォルダ出力と退避・復元はChrome / Edgeに対応します。</p></div>${actions('')}`);}
+function help(){dialog(`<div class="dialog-body"><h2>写真の整理から、友達へのおすそわけまで。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>と、解析前から写真を確認できます。写真をクリックして<strong>この写真から人物を登録</strong>を選びます。</li><li><strong>顔の四角を選んで名前を登録</strong>。集合写真から複数人を続けて登録できます。検出されない顔は<strong>顔を囲んで指定</strong>でドラッグしてください。登録先を選ぶと、同じ人物に別の顔写真も追加できます。</li><li><strong>写真を解析</strong>して人物とボケ候補を確認。写真をクリックして人物・日付を修正できます。</li><li><strong>イベントを登録</strong>。日帰りは1日、旅行は開始日〜終了日を指定します。</li><li><strong>フォルダへ出力 / ZIPで保存</strong>。集合写真は各人のフォルダへコピーし、イベント・日付で整理します。</li></ol><p>写真と顔の特徴量は端末内で処理し、サーバーに送信しません。顔の登録はタブを閉じると消去。イベント名と期間はこのブラウザだけに保存します。判定は目安なので、配る前に画像をご確認ください。</p><p>撮影日がない写真はファイル更新日を表示します。圧縮は指定容量以下のJPEG、1 MB = 1,000,000バイト。圧縮しない場合は元ファイルをコピーします。直接フォルダ出力と退避・復元はChrome / Edgeに対応します。</p></div>${actions('')}`);}
 
 function listen(id,event,fn){$(id).addEventListener(event,fn);}
 const savedControlIds=['use-faces','distance','skip-blur','blur-threshold','compress','target-size','target-unit','allow-resize','export-mode','person-filter','date-filter'];
@@ -511,6 +583,8 @@ async function applyUpdateSnapshot(snapshot){
 }
 
 listen('add-person','click',()=>editPerson());
+listen('choose-face-photo','click',()=>{if(state.busy)return;state.pickFacePhoto=true;state.filter='all';state.page=0;$('person-filter').value='';$('date-filter').value='';document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));render();$('gallery').scrollIntoView({behavior:'smooth',block:'center'});});
+listen('cancel-face-photo','click',()=>{state.pickFacePhoto=false;render();});
 listen('people-list','click',event=>{
   if(state.busy)return;
   const edit=event.target.closest('[data-edit-person]');
@@ -540,7 +614,7 @@ document.querySelectorAll('[data-filter]').forEach(button=>button.onclick=()=>{s
 listen('select-visible','click',()=>{visible().filter(r=>r.analyzed&&!r.error).forEach(r=>r.selected=true);renderGallery();});
 listen('clear-visible','click',()=>{visible().forEach(r=>r.selected=false);renderGallery();});
 listen('gallery','change',event=>{const id=event.target.dataset.select;if(id){state.records.find(r=>r.id===id).selected=event.target.checked;renderGallery();}});
-listen('gallery','click',event=>{const button=event.target.closest('[data-photo]');if(button)photoDialog(state.records.find(r=>r.id===button.dataset.photo));});
+listen('gallery','click',event=>{const button=event.target.closest('[data-photo]');if(button){const record=state.records.find(r=>r.id===button.dataset.photo);if(state.pickFacePhoto)void registerPeopleFromPhoto(record);else void photoDialog(record);}});
 listen('prev-page','click',()=>{state.page--;renderGallery();});listen('next-page','click',()=>{state.page++;renderGallery();});
 listen('export-folder','click',exportFolder);listen('export-zip','click',exportZip);
 listen('quarantine','click',quarantineDialog);listen('restore','click',restore);

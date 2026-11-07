@@ -8,16 +8,16 @@
   <meta name="referrer" content="no-referrer">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css?v=1.0.1">
+  <link rel="stylesheet" href="./style.css?v=1.0.2">
   <script defer src="./vendor/face-api.min.js"></script>
   <script defer src="./vendor/exifr.js"></script>
   <script defer src="./vendor/fflate.js"></script>
-  <script type="module" src="./src/app.js?v=1.0.1"></script>
+  <script type="module" src="./src/app.js?v=1.0.2"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>WEB</small></span></a>
-    <span id="app-version" class="app-version">v1.0.1</span>
+    <span id="app-version" class="app-version">v1.0.2</span>
     <button id="check-update" class="update-check" type="button">更新確認</button>
     <span class="tagline">写真を、渡したい人へ。</span>
     <div class="private-badge"><span></span>写真はこの端末だけで処理</div>
@@ -27,9 +27,10 @@
     <aside class="sidebar">
       <section class="setting-section">
         <div class="section-heading"><span class="step">01</span><h2>人物を登録</h2><button class="tiny-button" id="add-person">＋ 追加</button></div>
-        <p class="hint">お子さんも、お友達も。人物ごとに顔写真を登録します。</p>
+        <p class="hint">読み込んだ写真の顔を選んで登録。集合写真から複数人を続けて指定できます。</p>
         <div id="people-list" class="people-list"></div>
-        <button id="add-reference" class="outline-button wide">顔写真を追加</button>
+        <button id="choose-face-photo" class="outline-button wide" disabled>読み込んだ写真から登録</button>
+        <button id="add-reference" class="text-button wide">別の写真ファイルから追加</button>
         <input id="reference-files" type="file" accept="image/jpeg,image/png" multiple hidden>
         <div id="reference-list" class="reference-list"></div>
         <label class="check-line"><input id="use-faces" type="checkbox" checked> 登録した人物で絞り込む</label>
@@ -57,7 +58,7 @@
         <label class="check-line"><input id="allow-resize" type="checkbox" checked> 必要なら解像度を下げる</label>
         <p class="hint">圧縮時は撮影情報・位置情報を除去。透明部分は白になります。</p>
       </section>
-      <div class="sidebar-footer"><span data-app-version>v1.0.1</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
+      <div class="sidebar-footer"><span data-app-version>v1.0.2</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
     </aside>
     <main>
       <section class="intro">
@@ -67,6 +68,7 @@
       </section>
       <section class="source-bar" aria-label="読み込み元"><span class="folder-icon">▱</span><div><strong id="source-name">フォルダが選択されていません</strong><small id="source-meta">サブフォルダの写真もまとめて整理できます</small></div><button id="fallback-source" class="text-button">ファイル選択で開く</button><button id="scan-button" class="primary-button" disabled>写真を解析</button></section>
       <div id="browser-note" class="notice" hidden></div>
+      <div id="face-photo-notice" class="notice" hidden>登録する顔が写った写真をクリックしてください。<button id="cancel-face-photo" type="button" class="text-button">選択をやめる</button></div>
       <section class="stats" aria-label="写真の集計"><div><span id="total-count">0</span><small>読み込み</small></div><div><span id="selected-count">0</span><small>出力対象</small></div><div><span id="day-count">0</span><small>撮影日</small></div><div><span id="blur-count">0</span><small>ボケ候補</small></div></section>
       <section class="review-toolbar">
         <div class="tabs" role="group" aria-label="表示の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="blur">ボケ候補</button><button class="tab" data-filter="error">エラー</button></div>
@@ -87,6 +89,7 @@
   <div class="progress-dock" id="progress-dock" hidden><div><strong id="progress-title">処理中</strong><small id="progress-detail"></small></div><progress id="progress-bar" max="100" value="0"></progress><button id="cancel" class="outline-button">中止</button></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <dialog id="face-editor-dialog" aria-label="写真から人物を登録"><div id="face-editor-content"></div></dialog>
   <dialog id="update-dialog" aria-labelledby="update-heading"><div class="dialog-body"><h2 id="update-heading">アプリの更新</h2><p id="update-status" role="status">最新バージョンを確認します。</p><p>「更新して再開」で、読み込んだ写真・人物登録・選択・設定をこのブラウザに一時保存して引き継ぎます。</p></div><div class="dialog-actions"><button id="close-updates" class="outline-button" type="button">閉じる</button><button id="retry-update-restore" class="outline-button" type="button" hidden>復元を再試行</button><button id="restart-update" class="primary-button" type="button" hidden>更新して再開</button></div></dialog>
 </body>
 </html>
