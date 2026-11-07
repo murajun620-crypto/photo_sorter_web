@@ -1,4 +1,4 @@
-import {mountFaceEditor} from './face-editor.js?v=2.2.0';
+import {mountFaceEditor} from './face-editor.js?v=2.2.1';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -159,6 +159,7 @@ function renderGallery(){
     const people=names(photo.matchedIds),tags=people.length?people.map(name=>`<span class="person-tag">${esc(name)}</span>`).join(''):`<span class="person-tag neutral">${photo.error?'読み込みエラー':!photo.analyzed?'未解析':'人物未分類'}</span>`;
     return `<article class="photo-card ${photo.selected?'selected':''}"><button class="photo-image" data-photo="${esc(photo.id)}" aria-label="${esc(photo.name)}を確認">${privateImage('thumb',photo.id,photo.name,'lazy')}</button><label class="card-checkbox"><input type="checkbox" data-select="${esc(photo.id)}" ${photo.selected?'checked':''} ${busy()||photo.error?'disabled':''} aria-label="${esc(photo.name)}を出力対象に"></label><div class="card-flags">${photo.needsReview?'<span class="review-badge">要確認</span>':''}${photo.blurLabel==='blur'?'<span class="blur-badge">ボケ指定</span>':''}</div><div class="card-info"><div class="card-name" title="${esc(photo.relative||photo.name)}">${esc(photo.name)}</div><div class="card-meta"><span>${esc(photo.date||'日付不明')}</span><span>${photo.size?size(photo.size):`${photo.faces?.length||0}人の顔`}</span></div><div class="card-people">${tags}</div><button class="review-link" data-photo="${esc(photo.id)}">顔を確認・修正 →</button></div></article>`;
   }).join('')||(data.photos.length?'<p class="filter-empty">この条件の写真はありません。</p>':'');
+  $('empty-state').querySelector('p').textContent=data.people.some(person=>person.referenceCount>0)?'登録済みの顔とOK／NGを使えます。写真フォルダを開き、「写真を解析」を押してください。':'写真はこのPCから読み込みます。人物を登録して解析すると、友達ごとに分類できます。';
   $('empty-state').hidden=data.photos.length>0;$('visible-count').textContent=`${all.length}枚を表示対象`;
   $('page-label').textContent=`${page+1} / ${pages}`;$('prev-page').disabled=page<=0;$('next-page').disabled=page>=pages-1;
   $('total-count').textContent=data.photos.length;$('selected-count').textContent=data.photos.filter(photo=>photo.selected&&!photo.error).length;
@@ -167,7 +168,7 @@ function renderGallery(){
 }
 
 function render(){
-  $('app-version').textContent=`v${data.appVersion||'2.2.0'}`;
+  $('app-version').textContent=`v${data.appVersion||'2.2.1'}`;
   const engine=data.engine,gpu=engine.gpuName||engine.device||'';
   $('gpu-status').textContent=engine.error?'GPUの確認が必要':engine.ready?`GPU · ${gpu||engine.provider||'接続済み'}`:'GPUを準備中';
   $('gpu-status').classList.toggle('error',Boolean(engine.error));$('gpu-status').title=gpu;
@@ -212,7 +213,7 @@ function renderProjects(){
 function projectDialog(kind){
   if(busy())return;
   const fresh=kind==='new';
-  showDialog(`<form id="project-form"><div class="dialog-body"><h2>${fresh?'新規プロジェクト':'プロジェクトを保存'}</h2><p>${fresh?'現在の作業を保存してから、空の写真一覧・人物登録で始めます。保存したプロジェクトは選択欄から開けます。':'写真一覧・人物登録・OK／NG・イベント・設定をPC内のプロジェクトとして保存します。'}</p><label class="dialog-field">プロジェクト名<input id="project-title" required maxlength="100" value="${esc(fresh?'新しいプロジェクト':data.currentProject?.name||'写真整理')}"></label></div>${dialogActions(`<button type="submit" class="primary-button" data-mutates>${fresh?'作成する':'保存する'}</button>`)}</form>`);
+  showDialog(`<form id="project-form"><div class="dialog-body"><h2>${fresh?'新規プロジェクト':'プロジェクトを保存'}</h2><p>${fresh?'現在の作業を保存し、人物登録・登録した顔・OK／NGを引き継いで作成します。写真一覧とイベントは空で始めます。作成後の登録や訂正はプロジェクトごとに保存します。':'写真一覧・人物登録・OK／NG・イベント・設定をPC内のプロジェクトとして保存します。'}</p><label class="dialog-field">プロジェクト名<input id="project-title" required maxlength="100" value="${esc(fresh?'新しいプロジェクト':data.currentProject?.name||'写真整理')}"></label></div>${dialogActions(`<button type="submit" class="primary-button" data-mutates>${fresh?'作成する':'保存する'}</button>`)}</form>`);
   $('project-form').onsubmit=event=>{
     event.preventDefault();const name=$('project-title').value.trim();if(!name)return;
     closeDialog();void perform(()=>api(fresh?'/api/projects/new':'/api/projects/save',{name}),{message:fresh?'新規プロジェクトを作成しました。':'プロジェクトを保存しました。'});
@@ -384,7 +385,7 @@ function showExportResult(result={}){
 }
 
 function help(){
-  showDialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。このPCの写真を読み込みます。</li><li>写真を開き、<strong>顔を選んで人物を登録</strong>。未解析の写真は<strong>この写真を解析</strong>で顔を探せます。顔が見つからなければ四角で囲んで指定します。</li><li><strong>写真を解析</strong>でまとめて人物を分類します。写真を開き、顔ごとの<strong>OK・本人／NG・別人</strong>で修正します。正しい名前を選んでOKにすると、その人へ訂正できます。</li><li>必要に応じて日付・イベント・容量を設定し、<strong>フォルダへ出力</strong>します。集合写真は各人のフォルダにコピーします。</li></ol><p><strong>プロジェクトを保存</strong>で名前を付けて保存します。<strong>新規プロジェクト</strong>は今の作業を保存し、空の写真一覧・人物登録から始めます。保存済みの作業は<strong>プロジェクトを開く</strong>の選択欄から戻せます。</p><p>人物登録・OK／NG・イベントはPCへ自動保存も行い、次回も復元します。初回の接続登録後は、WindowsへサインインしてPagesを開くだけで使えます。写真と顔の解析結果を外部サービスへ送信しません。</p><p>GPUが利用できない場合は画面に理由を表示します。認識のための機械学習処理はPC内のプログラムで行います。</p><p class="status-details">${esc(data.engine.gpuName||'')}<br>${esc(data.engine.provider||'')}<br>${esc(data.engine.engineId||'')}</p></div>${dialogActions('')}`);
+  showDialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。このPCの写真を読み込みます。</li><li>写真を開き、<strong>顔を選んで人物を登録</strong>。未解析の写真は<strong>この写真を解析</strong>で顔を探せます。顔が見つからなければ四角で囲んで指定します。</li><li><strong>写真を解析</strong>でまとめて人物を分類します。写真を開き、顔ごとの<strong>OK・本人／NG・別人</strong>で修正します。正しい名前を選んでOKにすると、その人へ訂正できます。</li><li>必要に応じて日付・イベント・容量を設定し、<strong>フォルダへ出力</strong>します。集合写真は各人のフォルダにコピーします。</li></ol><p><strong>プロジェクトを保存</strong>で名前を付けて保存します。<strong>新規プロジェクト</strong>は今の作業を保存し、人物登録とOK／NGを引き継ぎます。写真一覧とイベントは空で始めます。保存済みの作業は<strong>プロジェクトを開く</strong>の選択欄から戻せます。</p><p>人物登録・OK／NG・イベントはPCへ自動保存も行い、次回も復元します。初回の接続登録後は、WindowsへサインインしてPagesを開くだけで使えます。写真と顔の解析結果を外部サービスへ送信しません。</p><p>GPUが利用できない場合は画面に理由を表示します。認識のための機械学習処理はPC内のプログラムで行います。</p><p class="status-details">${esc(data.engine.gpuName||'')}<br>${esc(data.engine.provider||'')}<br>${esc(data.engine.engineId||'')}</p></div>${dialogActions('')}`);
 }
 
 for(const id of ['choose-source','empty-import'])$(id).onclick=()=>void pickSource();
