@@ -1,4 +1,4 @@
-/** Experimental local-only YuNet/SFace engine. Not interchangeable with old embeddings. */
+/** Local-only YuNet/SFace engine. Not interchangeable with old embeddings. */
 export const ENGINE_MODEL_SHA256 = Object.freeze({
   detector:'8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4',
   recognizer:'0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79',
@@ -93,7 +93,7 @@ export async function loadEngine(onProgress=()=>{}){
   if(!sessionsPromise){
     sessionsPromise=(async()=>{
       const runtime=globalThis.ort;
-      if(!runtime?.InferenceSession||!runtime?.Tensor)throw new Error('ONNX Runtimeを読み込めません。比較画面を再読み込みしてください。');
+      if(!runtime?.InferenceSession||!runtime?.Tensor)throw new Error('ONNX Runtimeを読み込めません。ページを再読み込みしてください。');
       const runtimeUrl=new URL('../vendor/ort/',import.meta.url),modelUrl=new URL('../models-v2/',import.meta.url);
       if(runtimeUrl.origin!==location.origin||modelUrl.origin!==location.origin)throw new Error('モデルはこのアプリと同じ配信元から読み込む必要があります。');
       runtime.env.logLevel='error';runtime.env.wasm.numThreads=1;runtime.env.wasm.proxy=false;runtime.env.wasm.wasmPaths=runtimeUrl.href;
@@ -105,7 +105,7 @@ export async function loadEngine(onProgress=()=>{}){
         const recognizer=await runtime.InferenceSession.create(new URL('face_recognition_sface_2021dec.onnx',modelUrl).href,options);
         onProgress('モデルの準備ができました（2/2）');return {detector,recognizer};
       }catch(error){await detector.release();throw error;}
-    })().catch(error=>{sessionsPromise=null;throw new Error(`比較用モデルを準備できませんでした。${error.message||error}`);});
+    })().catch(error=>{sessionsPromise=null;throw new Error(`顔認識モデルを準備できませんでした。${error.message||error}`);});
   }
   return sessionsPromise;
 }
@@ -167,7 +167,7 @@ async function describeOriginal(source,face,sessions){
 
 async function findCandidates(source,sessions,{signal,onProgress,tiled}){
   const width=source.width,height=source.height;
-  if(![width,height].every(value=>Number.isInteger(value)&&value>0))throw new Error('比較する写真を読み込めません。');
+  if(![width,height].every(value=>Number.isInteger(value)&&value>0))throw new Error('写真を読み込めません。');
   const tiles=tiled?planTiles(width,height):[];
   const candidates=[];const input=canvas2D(640,640),context=context2D(input);
   const globalScale=Math.min(1,640/Math.max(width,height));

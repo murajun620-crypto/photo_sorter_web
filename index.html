@@ -3,21 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="description" content="写真を送信せず、人物・日付・イベントで整理。ブラウザ内で顔の照合、ボケ確認、容量指定の圧縮。">
   <meta name="referrer" content="no-referrer">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="./icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./style.css?v=1.0.3">
-  <script defer src="./vendor/face-api.min.js"></script>
+  <link rel="stylesheet" href="./style.css?v=1.1.0">
+  <script defer src="./vendor/ort/ort.wasm.min.js"></script>
   <script defer src="./vendor/exifr.js"></script>
   <script defer src="./vendor/fflate.js"></script>
-  <script type="module" src="./src/app.js?v=1.0.3"></script>
+  <script type="module" src="./src/app.js?v=1.1.0"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>WEB</small></span></a>
-    <span id="app-version" class="app-version">v1.0.3</span>
+    <span id="app-version" class="app-version">v1.1.0</span>
     <button id="check-update" class="update-check" type="button">更新確認</button>
     <span class="tagline">写真を、渡したい人へ。</span>
     <div class="private-badge"><span></span>写真はこの端末だけで処理</div>
@@ -31,14 +31,14 @@
         <div id="people-list" class="people-list"></div>
         <button id="choose-face-photo" class="outline-button wide" disabled>読み込んだ写真から登録</button>
         <button id="start-feedback" class="outline-button wide feedback-launch" disabled>OK／NGで判定を調整</button>
-        <p class="hint">登録後はまず12枚を試し判定。顔ごとのOK／NGを全体へ反映します。</p>
+        <p class="hint">写真を解析したら、写真を開いて顔ごとにOK／NGで修正できます。まとめて確認することもできます。</p>
         <label class="check-line"><input id="review-feedback-answers" type="checkbox"> 回答済みのOK／NGを見直す</label>
         <button id="add-reference" class="text-button wide">別の写真ファイルから追加</button>
         <input id="reference-files" type="file" accept="image/jpeg,image/png" multiple hidden>
         <div id="reference-list" class="reference-list"></div>
         <label class="check-line"><input id="use-faces" type="checkbox" checked> 登録した人物で絞り込む</label>
         <details class="advanced"><summary>顔の判定を調整</summary>
-          <label class="field-row">顔の距離しきい値 <input id="distance" type="number" min="0.1" max="1" step="0.01" value="0.52"></label>
+          <label class="field-row">顔の距離しきい値 <input id="distance" type="number" min="0.1" max="2" step="0.01" value="1.10"></label>
           <label class="field-row">候補間に必要な差 <input id="ambiguity-margin" type="number" min="0" max="0.3" step="0.01" value="0.05"></label>
           <p class="hint">距離が小さいほど近い顔です。候補が近すぎる顔は確定せず「要確認」へ。まず同じ時期の正面・斜め・表情違いを3〜5枚登録してください。</p>
         </details>
@@ -64,11 +64,11 @@
         <label class="check-line"><input id="allow-resize" type="checkbox" checked> 必要なら解像度を下げる</label>
         <p class="hint">圧縮時は撮影情報・位置情報を除去。透明部分は白になります。</p>
       </section>
-      <div class="sidebar-footer"><span data-app-version>v1.0.3</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
+      <div class="sidebar-footer"><span data-app-version>v1.1.0</span> · JPEG / PNG<br>顔写真はタブを閉じると消去されます。</div>
     </aside>
     <main>
       <section class="intro">
-        <div><span class="eyebrow">YOUR MEMORIES, ORGANIZED</span><h1>みんなの思い出を、<br class="mobile-only">それぞれのアルバムへ。</h1><p>人物で選び、イベントでまとめ、ちょうどいい容量で渡す。</p></div>
+        <div><span class="eyebrow">YOUR MEMORIES, ORGANIZED</span><h1>みんなの思い出を、<br class="mobile-only">それぞれのアルバムへ。</h1><p>人物を登録 → 写真を解析 → 写真を開いてOK／NGで修正。</p></div>
         <button id="choose-source" class="primary-button"><span>＋</span> 写真フォルダを開く</button>
         <input id="source-files" type="file" accept="image/jpeg,image/png" webkitdirectory multiple hidden>
       </section>

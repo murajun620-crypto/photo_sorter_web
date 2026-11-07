@@ -1,6 +1,18 @@
-import {faceDistance} from './imaging.js?v=1.0.3';
+import {faceDistance} from './imaging.js?v=1.1.0';
+import {ENGINE_ID,assertCurrentFeature} from './recognition.js?v=1.1.0';
 
 const SAME_FACE_EPSILON = 1e-6;
+
+function validateEngines(records,profiles){
+  const features=[...profiles.flatMap(person=>[...(person.refs||[]),...(person.negatives||[])]),
+    ...records.flatMap(record=>(record.faces||[]).filter(face=>face?.descriptor?.length))];
+  const declared=[...records,...profiles,...features].map(value=>value?.engineId).filter(Boolean);
+  // Untagged legacy vectors are supported by pure helper callers. Main-app
+  // features and owners always carry a tag, making mixed banks fail closed.
+  if(!declared.length)return;
+  if(declared.some(id=>id!==ENGINE_ID))throw new Error('異なる認識方式の顔データが混在しています。元の写真から登録・解析し直してください。');
+  features.forEach(assertCurrentFeature);
+}
 
 function descriptor(value) {
   if (!value || !Number.isInteger(value.length) || value.length < 1 ||
@@ -42,6 +54,7 @@ export function collectFeedbackCandidates(records, profile, {maxDistance = .52, 
     throw new Error('確認する写真の条件が正しくありません。');
   }
   if (!limit) return [];
+  validateEngines(records||[],[profile]);
   const refs = examples(profile.refs);
   if (!refs.length) return [];
   const candidates = [], seen = new Set();
@@ -57,7 +70,7 @@ export function collectFeedbackCandidates(records, profile, {maxDistance = .52, 
       const feature = descriptor(face.descriptor);
       const distance = faceDistance([feature], refs);
       if (distance === null || distance <= SAME_FACE_EPSILON&&!reviewAnswered) continue;
-      candidates.push({key, recordId: record.id, faceIndex, descriptor: feature,
+      candidates.push({key, recordId: record.id, faceIndex, descriptor: feature,engineId:face.engineId,
         box: face.box ? {...face.box} : null, distance, relative: record.relative || record.file?.name || ''});
     }
   }
@@ -90,6 +103,7 @@ export function applyFaceFeedback(profiles, record, faceIndex, personId, decisio
   const profile = profiles?.find(person => person.id === personId);
   if (!profile) throw new Error('確認する人物が見つかりません。');
   const key = faceKey(record, faceIndex), face = record.faces[faceIndex];
+  validateEngines([record],profiles);
   const feature = descriptor(face.descriptor);
   // Validate dimensions before changing any existing feedback.
   for (const person of profiles) {
@@ -116,7 +130,7 @@ export function applyFaceFeedback(profiles, record, faceIndex, personId, decisio
   let reference;
   if (!sameExample(feature, values)) {
     const example = {id: makeId?.() || `feedback:${key}:${personId}:${decision}`,
-      descriptor: feature, feedbackKey: key, source: 'feedback'};
+      descriptor: feature, engineId:face.engineId, feedbackKey: key, source: 'feedback'};
     values.push(example);
     if (decision === 'ok') reference = example;
   }
@@ -125,6 +139,7 @@ export function applyFaceFeedback(profiles, record, faceIndex, personId, decisio
 
 /** Re-score cached face descriptors without decoding or re-uploading photos. */
 export function recomputeFaceDistances(records, profiles) {
+  validateEngines(records||[],profiles);
   const references = profiles.map(profile => ({id: profile.id, refs: examples(profile.refs), negatives: examples(profile.negatives)}));
   const updates = [];
   let updatedFaces = 0, missingDescriptors = 0;

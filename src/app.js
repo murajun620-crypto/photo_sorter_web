@@ -1,12 +1,12 @@
-import {loadModels, decodeImage, detectFaces, faceDistance, blurScore, compressToTarget} from './imaging.js?v=1.0.3';
-import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js?v=1.0.3';
-import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js?v=1.0.3';
-import {createThumbnailQueue} from './thumbnails.js?v=1.0.3';
-import {CURRENT_VERSION, installUpdates} from './updates.js?v=1.0.3';
-import {mountFaceEditor} from './face-editor.js?v=1.0.3';
-import {descriptorFromRegion} from './face-regions.js?v=1.0.3';
-import {deriveCalibrations,reviewBlur} from './blur-calibration.js?v=1.0.3';
-import {collectFeedbackCandidates,applyFaceFeedback,recomputeFaceDistances} from './feedback.js?v=1.0.3';
+import {decodeImage, faceDistance, blurScore, compressToTarget} from './imaging.js?v=1.1.0';
+import {collectPhotos, verifyUnchanged, validatedOutputParts, exportRecords, quarantineRecords, restoreQuarantine} from './filesystem.js?v=1.1.0';
+import {photoDate, localDate, validDate, safeName, validateEvent, eventForDate, classifyPhoto, outputPlan} from './organize.js?v=1.1.0';
+import {createThumbnailQueue} from './thumbnails.js?v=1.1.0';
+import {CURRENT_VERSION, installUpdates} from './updates.js?v=1.1.0';
+import {mountFaceEditor} from './face-editor.js?v=1.1.0';
+import {ENGINE_ID,loadModels,detectFaces,descriptorFromRegion,migrateSnapshot,mergeRegisteredFaces} from './recognition.js?v=1.1.0';
+import {deriveCalibrations,reviewBlur} from './blur-calibration.js?v=1.1.0';
+import {collectFeedbackCandidates,applyFaceFeedback,recomputeFaceDistances} from './feedback.js?v=1.1.0';
 
 const $ = id => document.getElementById(id);
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -90,7 +90,7 @@ async function job(title, action) {
 
 function options() {
   const maxDistance=Number($('distance').value), ambiguityMargin=Number($('ambiguity-margin').value);
-  if (!Number.isFinite(maxDistance) || maxDistance<.1 || maxDistance>1) throw new Error('顔の距離しきい値は0.1〜1で入力してください。');
+  if (!Number.isFinite(maxDistance) || maxDistance<.1 || maxDistance>2) throw new Error('顔の距離しきい値は0.1〜2で入力してください。');
   if(!Number.isFinite(ambiguityMargin)||ambiguityMargin<0||ambiguityMargin>.3)throw new Error('候補の差は0〜0.3で入力してください。');
   return {useFaces:$('use-faces').checked,maxDistance,ambiguityMargin,blurThreshold:0,skipBlur:false,mode:$('export-mode').value};
 }
@@ -171,11 +171,11 @@ async function editPerson(person=null) {
     if(!name)return;
     if(state.profiles.some(p=>p.id!==person?.id && safeName(p.name).toLocaleLowerCase()===safeName(name).toLocaleLowerCase()))return notify('フォルダ名が重複します。別の人物名にしてください。',true);
     if(person)person.name=name;
-    else{const profile={id:uid(),name,refs:[]};state.profiles.push(profile);state.activePerson=profile.id;invalidateAnalysis();}
+    else{const profile={id:uid(),name,engineId:ENGINE_ID,refs:[]};state.profiles.push(profile);state.activePerson=profile.id;invalidateAnalysis();}
     closeDialog(true);render();
   };
   if(person)$('delete-person').onclick=()=>{
-    for(const ref of person.refs)releaseImageURL(ref.url);
+    for(const ref of [...person.refs,...(person.pendingRefs||[])])releaseImageURL(ref.url);
     state.profiles=state.profiles.filter(p=>p.id!==person.id);
     if(state.activePerson===person.id)state.activePerson=state.profiles[0]?.id||null;
     invalidateAnalysis();closeDialog(true);
@@ -185,10 +185,10 @@ async function editPerson(person=null) {
 }
 
 function renderPeople() {
-  $('people-list').innerHTML=state.profiles.length ? state.profiles.map(p=>`<div class="person ${p.id===state.activePerson?'active':''}" data-person="${p.id}" tabindex="0" role="button" aria-label="${escape(p.name)}を選択"><span class="avatar">${escape(p.name.slice(0,1))}</span><span class="person-label">${escape(p.name)}<small>顔写真 ${p.refs.length}枚${p.refs.length<3?' · まず3〜5枚':''}${p.negatives?.length?` · NG ${p.negatives.length}件`:''}</small></span><button class="tiny-button" data-edit-person="${p.id}" aria-label="${escape(p.name)}の設定">⋯</button></div>`).join('') : '<p class="hint">写真を開き、写っている顔を選んで人物を登録できます。</p>';
+  $('people-list').innerHTML=state.profiles.length ? state.profiles.map(p=>`<div class="person ${p.id===state.activePerson?'active':''}" data-person="${p.id}" tabindex="0" role="button" aria-label="${escape(p.name)}を選択"><span class="avatar">${escape(p.name.slice(0,1))}</span><span class="person-label">${escape(p.name)}<small>顔写真 ${p.refs.length}枚${p.pendingRefs?.length?' · 更新後の再登録が必要':''}${p.refs.length<3?' · まず3〜5枚':''}${p.negatives?.length?` · NG ${p.negatives.length}件`:''}</small></span><button class="tiny-button" data-edit-person="${p.id}" aria-label="${escape(p.name)}の設定">⋯</button></div>`).join('') : '<p class="hint">写真を開き、写っている顔を選んで人物を登録できます。</p>';
   const active=state.profiles.find(p=>p.id===state.activePerson);
   $('add-reference').textContent=active?`${active.name}：別の写真から追加`:'別の写真ファイルから追加';
-  $('reference-list').innerHTML=(active?.refs||[]).map((ref,i)=>`<div class="reference"><img src="${ref.url}" alt="登録した顔 ${i+1}"><button data-remove-ref="${i}" aria-label="顔写真${i+1}を外す">×</button></div>`).join('');
+  $('reference-list').innerHTML=(active?.pendingRefs?.length?'<p class="hint">旧方式の登録例です。元の写真を開いて顔を登録し直してください。</p>'+active.pendingRefs.filter(ref=>ref.url).map(ref=>`<div class="reference pending-reference"><img src="${ref.url}" alt="旧方式の登録例・再登録が必要"></div>`).join(''):'')+(active?.refs||[]).map((ref,i)=>`<div class="reference"><img src="${ref.url}" alt="登録した顔 ${i+1}"><button data-remove-ref="${i}" aria-label="顔写真${i+1}を外す">×</button></div>`).join('');
   const filter=$('person-filter').value;
   $('person-filter').innerHTML='<option value="">すべての人物</option>'+state.profiles.map(p=>`<option value="${p.id}">${escape(p.name)}</option>`).join('');
   $('person-filter').value=state.profiles.some(p=>p.id===filter)?filter:'';
@@ -219,7 +219,7 @@ async function addReferences(files) {
       try{
         progress(0,0,file.name);
         decoded=await decodeImage(file);
-        const faces=await detectFaces(decoded.canvas);
+        const faces=await detectFaces(decoded.canvas,{signal,onProgress:progress});
         if(signal.aborted)break;
         if(!faces.length){notify(`${file.name}: 顔が見つかりません。顔が大きく写った写真を選んでください。`,true);continue;}
         for(const face of faces)urls.push(await canvasURL(decoded.canvas,150,150,face.box));
@@ -229,7 +229,7 @@ async function addReferences(files) {
         const chosen=await answer;
         if(chosen!==null&&!signal.aborted){
           const url=await canvasURL(decoded.canvas,80,80,faces[chosen].box);
-          person.refs.push({descriptor:faces[chosen].descriptor,url});added++;
+          person.refs.push({descriptor:faces[chosen].descriptor,engineId:ENGINE_ID,url});for(const ref of person.pendingRefs||[])releaseImageURL(ref.url);person.pendingRefs=[];added++;
           renderPeople();
         }
       }catch(error){notify(`${file.name}: ${error.message}`,true);}
@@ -271,14 +271,21 @@ async function registerPeopleFromPhoto(record){
             if(!newName)throw new Error('新しい人物の名前を入力してください。');
             if(state.profiles.some(p=>safeName(p.name).toLocaleLowerCase()===safeName(newName).toLocaleLowerCase()))throw new Error('同じ名前の人物が登録済みです。登録先からその人物を選んでください。');
           }
-          const selected=face?.descriptor?face:await descriptorFromRegion(decoded.canvas,region);
+          const selected=face?.descriptor?face:await descriptorFromRegion(decoded.canvas,region,{signal});
           if(!active||signal.aborted)throw abortError();
           const distance=person?faceDistance([selected.descriptor],person.refs.map(ref=>ref.descriptor)):null;
           if(distance!==null&&distance<1e-6)return {profiles:profileOptions(),personId:person.id,message:'この顔はすでに登録されています。別の顔を選んでください。'};
           const url=await canvasURL(decoded.canvas,80,80,selected.box);
           if(!active||signal.aborted){releaseImageURL(url);throw abortError();}
-          if(!person){person={id:uid(),name:newName,refs:[]};state.profiles.push(person);}
-          person.refs.push({descriptor:Float32Array.from(selected.descriptor),url});
+          if(!person){person={id:uid(),name:newName,engineId:ENGINE_ID,refs:[]};state.profiles.push(person);}
+          person.refs.push({descriptor:Float32Array.from(selected.descriptor),engineId:ENGINE_ID,url,sourceRecordId:record.id,box:{...selected.box}});
+          for(const ref of person.pendingRefs||[])releaseImageURL(ref.url);person.pendingRefs=[];
+          const live=state.records.find(r=>r.id===record.id);
+          if(live){
+            const registered={id:uid(),box:{...selected.box},landmarks:selected.landmarks,descriptor:Float32Array.from(selected.descriptor),engineId:ENGINE_ID,feedback:{[person.id]:'ok'}};
+            live.registeredFaces=mergeRegisteredFaces([], [...(live.registeredFaces||[]),registered]);
+            if(live.facesDetected){live.faces=mergeRegisteredFaces(live.faces,live.registeredFaces).map(f=>({...f,blur:blurScore(decoded.canvas,[f.box])}));live.engineId=ENGINE_ID;}
+          }
           state.activePerson=person.id;added++;
           invalidateAnalysis();
           return {profiles:profileOptions(),personId:person.id,message:`${person.name}に顔写真を登録しました。次の顔も続けて登録できます。`};
@@ -287,7 +294,7 @@ async function registerPeopleFromPhoto(record){
       editor.setStatus('顔を検出しています。見つからない顔は「顔を囲んで指定」で選べます。');
       editorDialog.showModal();
       progress(0,0,record.relative);
-      detection=detectFaces(decoded.canvas).then(faces=>{
+      detection=detectFaces(decoded.canvas,{signal,onProgress:progress}).then(faces=>{
         if(active){editor.setFaces(faces);editor.setStatus(faces.length?`${faces.length}人の顔が見つかりました。枠を選び、登録先を指定してください。`:'顔が見つかりませんでした。「顔を囲んで指定」で1人の顔を囲んでください。');}
       }).catch(error=>{if(active)editor.setStatus(error.message,true);});
       await closed;
@@ -365,7 +372,7 @@ async function loadFallback(files){
   notify(`${state.records.length}枚を読み込みました。出力はZIPで保存できます。`);
 }
 
-async function scan({trial=false}={}){
+async function scan({trial=false,onlyIds=null}={}){
   let opts;
   try{
     opts=options();
@@ -373,8 +380,8 @@ async function scan({trial=false}={}){
   }catch(error){return notify(error.message,true);}
   await job(trial?'12枚を試し判定しています':'写真を解析しています',async signal=>{
     const pending=state.records.filter(record=>!record.error&&(!record.analyzed||!record.featuresReady||opts.useFaces&&!record.facesDetected));
-    const samples=trial?Array.from({length:Math.min(12,pending.length)},(_,i)=>pending[Math.floor(i*pending.length/Math.min(12,pending.length))]):state.records;
-    if(!trial)for(const record of state.records){record.selected=false;record.analyzed=false;record.error=null;record.blurry=false;record.matchedIds=[];record.needsReview=false;}
+    const samples=trial?Array.from({length:Math.min(12,pending.length)},(_,i)=>pending[Math.floor(i*pending.length/Math.min(12,pending.length))]):onlyIds?state.records.filter(r=>onlyIds.includes(r.id)):state.records;
+    if(!trial)for(const record of samples){record.selected=false;record.analyzed=false;record.error=null;record.blurry=false;record.matchedIds=[];record.needsReview=false;}
     if(opts.useFaces)await loadModels(text=>progress(0,0,text));
     state.analyzedMode=opts.useFaces;
     for(let i=0;i<samples.length;i++){
@@ -383,7 +390,7 @@ async function scan({trial=false}={}){
       record.selected=false;record.error=null;
       try{
         const file=record.handle?await verifyUnchanged(record):record.file;
-        if(record.featuresReady&&(!opts.useFaces||record.facesDetected)){
+        if(record.featuresReady&&(!opts.useFaces||record.facesDetected&&record.engineId===ENGINE_ID)){
           record.analyzed=true;recomputeFaceDistances([record],state.profiles);progress(i+1,samples.length,record.relative);await tick();continue;
         }
         decoded=await decodeImage(file);
@@ -391,11 +398,11 @@ async function scan({trial=false}={}){
         delete record.thumbnailError;
         if(!record.manualDate)Object.assign(record,await photoDate(file));
         record.width=decoded.width;record.height=decoded.height;
-        const faces=opts.useFaces?await detectFaces(decoded.canvas):[];
-        record.faces=faces.map(face=>({box:face.box,descriptor:Float32Array.from(face.descriptor),blur:blurScore(decoded.canvas,[face.box])}));
-        record.fullBlur=blurScore(decoded.canvas);record.analyzed=true;record.featuresReady=true;record.facesDetected=opts.useFaces;
+        const faces=opts.useFaces?mergeRegisteredFaces(await detectFaces(decoded.canvas,{signal,onProgress:progress}),record.registeredFaces||[]):[];
+        record.faces=faces.map(face=>({...face,engineId:ENGINE_ID,descriptor:Float32Array.from(face.descriptor),blur:blurScore(decoded.canvas,[face.box])}));
+        record.fullBlur=blurScore(decoded.canvas);record.analyzed=true;record.featuresReady=true;record.facesDetected=opts.useFaces;record.engineId=ENGINE_ID;
         recomputeFaceDistances([record],state.profiles);
-      }catch(error){record.error=error.message;record.analyzed=true;record.selected=false;record.blurry=false;}
+      }catch(error){if(error.name==='AbortError'){record.analyzed=false;record.selected=false;break;}record.error=error.message;record.analyzed=true;record.selected=false;record.blurry=false;}
       finally{decoded?.close();}
       progress(i+1,samples.length,record.relative);
       if(i%5===0){classifyRecords();renderGallery();}
@@ -454,16 +461,11 @@ async function startFaceFeedback(){
         const decision=await answer;
         if(decision===null||signal.aborted)break;
         if(decision==='skip'){skipped.add(candidate.key);continue;}
-        let referenceURL;
-        if(decision==='ok')referenceURL=await canvasURL(decoded.canvas,80,80,face.box);
-        const result=applyFaceFeedback(state.profiles,record,candidate.faceIndex,person.id,decision);
-        if(result.addedReference){result.reference.url=referenceURL;result.reference.blob=imageBlobs.get(referenceURL);}
-        else releaseImageURL(referenceURL);
-        for(const ref of result.removedReferences||[])releaseImageURL(ref.url);
+        await correctFace(record.id,candidate.faceIndex,person.id,decision,decoded.canvas);
         if(decision==='ok')ok++;else ng++;
         skipped.add(candidate.key);
         progress(step+1,12,'判定を全体に反映しています…');
-        await refreshFeedbackScores();render();
+        render();
       }catch(error){notify(error.message,true);skipped.add(candidate.key);}
       finally{decoded?.close();urls.forEach(releaseImageURL);}
     }
@@ -521,28 +523,99 @@ function render(){
   $('blur-calibration-status').textContent=`鮮明な例 ${state.records.filter(r=>r.blurLabel==='sharp').length}枚 / ボケた例 ${state.records.filter(r=>r.blurLabel==='blur').length}枚。調整済み ${ready}組${overlap?` / 分離できない ${overlap}組`:''}（撮影日・顔／全体ごと）。`;
 }
 
+/** Apply one face answer, then refresh every cached photo without running detection again. */
+async function correctFace(recordId,faceIndex,personId,decision,canvas){
+  const record=state.records.find(r=>r.id===recordId),face=record?.faces?.[faceIndex];
+  if(!face||face.engineId!==ENGINE_ID)throw new Error('この写真を新方式で解析してください。');
+  const affected=new Set([personId,...(decision==='ok'?[record.faceMatches?.[faceIndex]?.personId,...Object.keys(face.feedback||{}).filter(id=>face.feedback[id]==='ok')]:[])].filter(Boolean));
+  let url=decision==='ok'?await canvasURL(canvas,80,80,face.box):null;
+  let result;
+  try{result=applyFaceFeedback(state.profiles,record,faceIndex,personId,decision);}catch(error){releaseImageURL(url);throw error;}
+  if(result.addedReference){Object.assign(result.reference,{url,blob:imageBlobs.get(url),sourceRecordId:recordId,box:{...face.box}});}else releaseImageURL(url);
+  for(const ref of result.removedReferences||[])releaseImageURL(ref.url);
+  for(const registered of record.registeredFaces||[])if(registered.id===face.id)registered.feedback={...face.feedback};
+  // Face corrections update only the affected names in a photo-level override.
+  // Unrelated manually added people (including undetected faces) remain intact.
+  if(record.manualPeople!=null){
+    recomputeFaceDistances([record],state.profiles);
+    const automatic=classifyPhoto({...record,manualPeople:null},state.profiles,options());
+    record.manualPeople=[...new Set([...record.manualPeople.filter(id=>!affected.has(id)),...automatic.matchedIds.filter(id=>affected.has(id))])];
+  }
+  await refreshFeedbackScores();
+  return result;
+}
+
 async function photoDialog(record){
   if(state.busy)return;
+  const recordId=record.id,current=()=>state.records.find(r=>r.id===recordId);
   let file;
   try{file=record.handle?await verifyUnchanged(record):record.file;}catch(error){return notify(error.message,true);}
-  const url=URL.createObjectURL(file);
-  const done=dialog(`<form id="photo-form"><div class="dialog-body"><h2>写真を確認</h2><img class="photo-detail-image" src="${url}" alt="${escape(record.file.name)}"><div class="photo-enroll-action"><button id="register-from-photo" class="outline-button" type="button">この写真から人物を登録</button><span class="hint">顔の枠を選択、または手動で囲んで登録できます。</span></div><div class="detail-info">${escape(record.relative)}<br>${record.width||'?'} × ${record.height||'?'} px · ${size(file.size)} · 鮮明度 ${Number.isFinite(record.sharpness)?record.sharpness.toFixed(1):'—'}<br>${escape(record.error||record.dateSource||'')}</div><p class="review-explanation">${escape(reviewNote(record))}</p><label class="dialog-field">ボケ判定の基準例<select id="blur-example"><option value="">指定しない</option><option value="sharp" ${record.blurLabel==='sharp'?'selected':''}>この写真は鮮明</option><option value="blur" ${record.blurLabel==='blur'?'selected':''}>この写真はボケている</option></select></label><p class="hint">同じ撮影日・顔／全体の条件ごとに、鮮明とボケを3枚ずつ登録します。両者を分けられなければ自動で除外しません。</p><label class="dialog-field">分類する日付<input type="date" id="photo-date" value="${validDate(record.date)?record.date:''}"></label><p>写っている人物を確認・修正できます。顔の数値は距離で、小さいほど近い顔です。</p><div class="detail-pills">${state.profiles.map(p=>`<label><input type="checkbox" name="photo-person" value="${p.id}" ${record.matchedIds?.includes(p.id)?'checked':''}>${escape(p.name)} <small>${record.distances?.[p.id]!=null?record.distances[p.id].toFixed(3):'—'}</small></label>`).join('')}</div><label class="check-line"><input id="photo-selected" type="checkbox" ${record.selected?'checked':''} ${record.error||!record.analyzed?'disabled':''}> この写真を出力する</label></div>${actions('<button type="submit" class="primary-button">変更を保存</button>')}</form>`);
-  $('register-from-photo').onclick=()=>{closeDialog();void registerPeopleFromPhoto(record);};
-  let peopleEdited=false,selectionEdited=false;
-  $('photo-form').querySelectorAll('[name=photo-person]').forEach(input=>input.addEventListener('change',()=>peopleEdited=true));
+  const url=URL.createObjectURL(file),localURLs=[];let decoded,working=false,peopleEdited=false,selectionEdited=false;
+  const done=dialog(`<form id="photo-form"><div class="dialog-body"><h2>写真を確認・修正</h2><img class="photo-detail-image" src="${url}" alt="${escape(record.file.name)}"><div class="photo-enroll-action"><button id="register-from-photo" class="outline-button" type="button">顔を選んで人物を登録</button>${!record.facesDetected?'<button id="analyze-photo" class="primary-button" type="button">この写真を解析して確認</button>':''}</div><div class="detail-info">${escape(record.relative)} · ${size(file.size)}</div><section class="photo-face-section"><h3>顔ごとに確認</h3><p class="hint">合っていればOK。違っていればNG、または正しい名前を選んでOK。修正はすぐにこの写真と解析済みの写真へ反映され、これから解析する写真の判定にも使います。</p><div id="photo-face-review"><p class="hint">顔の表示を準備しています…</p></div><p id="photo-feedback-status" class="photo-feedback-status" role="status"></p></section><label class="dialog-field">ボケ判定の基準例<select id="blur-example"><option value="">指定しない</option><option value="sharp" ${record.blurLabel==='sharp'?'selected':''}>この写真は鮮明</option><option value="blur" ${record.blurLabel==='blur'?'selected':''}>この写真はボケている</option></select></label><p class="hint">同じ撮影日の鮮明・ボケの例をそれぞれ3枚登録すると、ボケの基準を調整できます。</p><label class="dialog-field">分類する日付<input type="date" id="photo-date" value="${validDate(record.date)?record.date:''}"></label><details class="photo-manual-people"><summary>顔が見つからない人物などを写真全体に手動指定</summary><p class="hint">ここで指定した人物も出力先に使います。顔のOK／NGでは、修正した人物の指定を更新します。</p><div class="detail-pills">${state.profiles.map(p=>`<label><input type="checkbox" name="photo-person" value="${p.id}" ${record.matchedIds?.includes(p.id)?'checked':''}>${escape(p.name)}</label>`).join('')}</div></details><label class="check-line"><input id="photo-selected" type="checkbox" ${record.selected?'checked':''} ${record.error||!record.analyzed?'disabled':''}> この写真を出力する</label></div>${actions('<button type="submit" class="primary-button">日付・出力設定を保存して閉じる</button>')}</form>`);
+  const form=$('photo-form'),isOpen=()=>$('dialog').open&&$('photo-form')===form;
+  const cancel=event=>{if(working){event.preventDefault();event.stopImmediatePropagation();}};
+  $('dialog').addEventListener('cancel',cancel,true);
+  const crops=[];
+  function paintFaces(){
+    const live=current();if(!isOpen()||!live)return;
+    $('photo-face-review').innerHTML=live.faces?.length?live.faces.map((face,i)=>{
+      const match=live.faceMatches?.[i],person=state.profiles.find(p=>p.id===match?.personId);
+      const selectedId=person?.id||match?.candidateIds?.[0]||state.activePerson||'';
+      const answers=Object.entries(face.feedback||{}).map(([id,value])=>{const name=state.profiles.find(p=>p.id===id)?.name;return name?`${name}：${value==='ok'?'OK・本人':'NG・別人'}`:'';}).filter(Boolean).join(' / ');
+      return `<article class="photo-review-face" data-review-face="${i}"><img src="${crops[i]||url}" alt="顔 ${i+1}"><div class="photo-review-fields"><strong>顔 ${i+1} · ${person?escape(person.name):'未確定'}</strong><p data-review-status>${escape(answers||'未確認')}</p><label>この顔の人物<select data-review-person="${i}" aria-label="顔 ${i+1}の人物"><option value="">人物を選ぶ</option>${state.profiles.map(p=>`<option value="${p.id}" ${p.id===selectedId?'selected':''}>${escape(p.name)}</option>`).join('')}</select></label><div class="photo-review-actions"><button type="button" class="primary-button" data-review-decision="ok">OK・本人</button><button type="button" class="outline-button danger" data-review-decision="ng">NG・別人</button></div></div></article>`;
+    }).join(''):`<p class="hint">${live.facesDetected?'顔が見つかりませんでした。「顔を選んで人物を登録」から手動で囲めます。':'人物を登録して写真を解析すると、ここで顔ごとに修正できます。'}</p>`;
+  }
+  function persistDraft(){
+    const live=current();if(!live)return;
+    if(peopleEdited){live.manualPeople=[...form.querySelectorAll('[name=photo-person]:checked')].map(v=>v.value);peopleEdited=false;}
+    if(selectionEdited){live.manualSelected=$('photo-selected').checked;selectionEdited=false;}
+  }
+  $('register-from-photo').onclick=()=>{persistDraft();closeDialog();void registerPeopleFromPhoto(current());};
+  if($('analyze-photo'))$('analyze-photo').onclick=async()=>{persistDraft();closeDialog();await scan({onlyIds:[recordId]});void photoDialog(current());};
+  form.querySelectorAll('[name=photo-person]').forEach(input=>input.addEventListener('change',()=>peopleEdited=true));
   $('photo-selected').addEventListener('change',()=>selectionEdited=true);
-  $('photo-form').onsubmit=e=>{
-    e.preventDefault();const date=$('photo-date').value;
-    if(!validDate(date))return notify('日付を正しく入力してください。',true);
-    if(date!==record.date){record.date=date;record.manualDate=true;record.dateSource='手動で指定';}
-    if(peopleEdited)record.manualPeople=[...document.querySelectorAll('[name=photo-person]:checked')].map(v=>v.value);
-    const selected=$('photo-selected').checked;
-    record.blurLabel=$('blur-example').value||null;
-    if(selectionEdited)record.manualSelected=selected;
-    classifyRecords();
-    closeDialog();render();
+  $('photo-face-review').onclick=async event=>{
+    const button=event.target.closest('[data-review-decision]');if(!button||working||!decoded)return;
+    const card=button.closest('[data-review-face]'),index=Number(card.dataset.reviewFace),personId=card.querySelector('select').value;
+    if(!personId)return notify('確認する人物を選んでください。',true);
+    persistDraft();working=true;const controls=[...form.querySelectorAll('button,input,select')].map(node=>[node,node.disabled]);controls.forEach(([node])=>node.disabled=true);
+    try{
+      await job('顔の修正を反映しています',async()=>{
+        await correctFace(recordId,index,personId,button.dataset.reviewDecision,decoded.canvas);
+        if(!isOpen())return;
+        paintFaces();const live=current();
+        form.querySelectorAll('[name=photo-person]').forEach(input=>input.checked=live.matchedIds?.includes(input.value));
+        $('photo-selected').checked=live.selected;
+        $('photo-feedback-status').textContent='修正を反映しました。顔のOK／NGはこの画面を閉じても有効です。';
+      });
+    }finally{working=false;controls.forEach(([node,disabled])=>{if(node.isConnected)node.disabled=disabled;});}
   };
-  await done;URL.revokeObjectURL(url);
+  form.onsubmit=e=>{
+    e.preventDefault();if(working)return;
+    const live=current(),date=$('photo-date').value;if(!live)return closeDialog();
+    if(!validDate(date))return notify('日付を正しく入力してください。',true);
+    persistDraft();if(date!==live.date){live.date=date;live.manualDate=true;live.dateSource='手動で指定';}
+    live.blurLabel=$('blur-example').value||null;classifyRecords();closeDialog();render();
+  };
+  try{
+    if(record.faces?.length){
+      decoded=await decodeImage(file);
+      if(isOpen()){
+        const display=document.createElement('canvas'),scale=Math.min(1,1000/decoded.width,600/decoded.height);
+        display.width=Math.max(1,Math.round(decoded.width*scale));display.height=Math.max(1,Math.round(decoded.height*scale));
+        const context=display.getContext('2d');context.drawImage(decoded.canvas,0,0,display.width,display.height);
+        for(const [i,face] of record.faces.entries()){
+          const crop=await canvasURL(decoded.canvas,130,130,face.box);localURLs.push(crop);crops.push(crop);
+          const x=face.box.x*scale,y=face.box.y*scale;context.strokeStyle='#d77a27';context.lineWidth=3;context.strokeRect(x,y,face.box.width*scale,face.box.height*scale);
+          context.fillStyle='#87430e';context.fillRect(x,Math.max(0,y-22),28,22);context.fillStyle='#fff';context.font='bold 16px sans-serif';context.fillText(String(i+1),x+6,Math.max(17,y-5));
+        }
+        const annotated=await canvasURL(display,1000,600);localURLs.push(annotated);display.width=display.height=1;
+        if(isOpen())form.querySelector('.photo-detail-image').src=annotated;
+      }
+    }
+    paintFaces();await done;
+  }catch(error){if(isOpen())$('photo-face-review').textContent=error.message;await done;}
+  finally{decoded?.close();localURLs.forEach(releaseImageURL);URL.revokeObjectURL(url);$('dialog').removeEventListener('cancel',cancel,true);}
 }
 
 function makePlan(){
@@ -638,14 +711,14 @@ async function restore(){
   });
 }
 
-function help(){dialog(`<div class="dialog-body"><h2>写真の整理から、友達へのおすそわけまで。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>と、解析前から写真を確認できます。写真をクリックして<strong>この写真から人物を登録</strong>を選びます。</li><li><strong>顔の四角を選んで名前を登録</strong>。集合写真から複数人を続けて登録できます。検出されない顔は<strong>顔を囲んで指定</strong>でドラッグしてください。登録先を選ぶと、同じ人物に別の顔写真も追加できます。</li><li>人物一覧で対象を選び、<strong>OK／NGで判定を調整</strong>。まず最大12枚を試し、枠の顔について本人か別人かを答えます。その後<strong>写真を解析</strong>で全体を処理します。曖昧な顔は「要確認」で見直せます。</li><li>ボケの自動除外は初期OFFです。同じ撮影日の鮮明・ボケの例を3枚ずつ指定し、基準を調整できる場合だけ適用します。<strong>イベント</strong>は日帰り・複数日の旅行どちらも登録できます。</li><li><strong>フォルダへ出力 / ZIPで保存</strong>。集合写真は各人のフォルダへコピーし、イベント・日付で整理します。</li></ol><p>写真と顔の特徴量は端末内で処理し、サーバーに送信しません。顔の登録はタブを閉じると消去。イベント名と期間はこのブラウザだけに保存します。判定は目安なので、配る前に画像をご確認ください。</p><p>撮影日がない写真はファイル更新日を表示します。圧縮は指定容量以下のJPEG、1 MB = 1,000,000バイト。圧縮しない場合は元ファイルをコピーします。直接フォルダ出力と退避・復元はChrome / Edgeに対応します。</p></div>${actions('')}`);}
+function help(){dialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。写真をクリックし、<strong>顔を選んで人物を登録</strong>から名前を付けます。集合写真でも一人ずつ選べます。検出されない顔は手動で囲めます。</li><li><strong>写真を解析</strong>。登録した人物に合わせて、出力対象と人物別の振り分け先を決めます。</li><li><strong>写真を開いて顔ごとに確認</strong>。合っていれば<strong>OK・本人</strong>、違っていれば<strong>NG・別人</strong>。正しい名前が分かれば、その名前を選んでOKにします。訂正はすぐに分類へ反映し、ほかの写真の判定例にも使います。左側のOK／NGボタンで、候補を続けて確認することもできます。</li><li><strong>日付・イベント・容量を設定</strong>。日帰り・複数日の旅行に対応します。ボケの自動除外を使う場合は、写真を開いて同じ撮影日の鮮明・ボケの例を各3枚指定します。</li><li><strong>フォルダへ出力 / ZIPで保存</strong>。集合写真は写っている各人のフォルダへコピーします。</li></ol><p>顔認識はこの端末で実行します。初回はモデル等を約51MB読み込みます。写真と顔の特徴量は送信しません。顔の登録とOK／NGはタブを閉じると消えますが、「更新して再開」では引き継ぎます。旧方式からの更新時は元写真から顔の再登録が必要です。</p><p>OK／NGは本人・別人の参照例として判定を補正します。顔認識モデル自体の再学習ではありません。判別が難しい顔は要確認に残します。撮影日がない写真はファイル更新日を代用します。圧縮する場合は指定容量以下のJPEGを作り、元写真は変更しません。</p></div>${actions('')}`);}
 
 function listen(id,event,fn){$(id).addEventListener(event,fn);}
 const savedControlIds=['use-faces','review-feedback-answers','distance','ambiguity-margin','skip-blur','compress','target-size','target-unit','allow-resize','export-mode','person-filter','date-filter'];
 
 async function getUpdateSnapshot(){
   await thumbnails.waitForIdle();
-  return {schema:1,qualityVersion:3,profiles:state.profiles.map(person=>({...person,refs:person.refs.map(ref=>({...ref,url:undefined,blob:imageBlobs.get(ref.url)}))})),
+  return {schema:1,qualityVersion:3,engineId:ENGINE_ID,profiles:state.profiles.map(person=>({...person,pendingRefs:(person.pendingRefs||[]).map(ref=>({...ref,url:undefined,blob:ref.blob||imageBlobs.get(ref.url)})),refs:person.refs.map(ref=>({...ref,url:undefined,blob:imageBlobs.get(ref.url)}))})),
     records:state.records.map(record=>({...record,thumbnail:null,thumbnailBlob:record.thumbnailBlob||imageBlobs.get(record.thumbnail)})),
     activePerson:state.activePerson,events:state.events,source:state.source,sourceName:state.sourceName,filter:state.filter,page:state.page,analyzedMode:state.analyzedMode,
     controls:Object.fromEntries(savedControlIds.map(id=>[id,$(id).type==='checkbox'?$(id).checked:$(id).value])),scrollY:window.scrollY};
@@ -653,6 +726,7 @@ async function getUpdateSnapshot(){
 
 async function applyUpdateSnapshot(snapshot){
   if(snapshot?.schema!==1||!Array.isArray(snapshot.profiles)||!Array.isArray(snapshot.records)||!Array.isArray(snapshot.events))throw new Error('一時保存データの形式が違います。');
+  const migration=migrateSnapshot(snapshot);snapshot=migration.snapshot;
   const urls=[];
   let profiles,records;
   const events=[];
@@ -661,7 +735,7 @@ async function applyUpdateSnapshot(snapshot){
   try{
     profiles=snapshot.profiles.map(person=>{
       if(!validId(person.id)||typeof person.name!=='string'||!Array.isArray(person.refs))throw new Error('人物登録を確認できません。');
-      return {...person,refs:person.refs.map(ref=>{if(!(ref.blob instanceof Blob)||!ref.descriptor?.length)throw new Error('登録した顔写真を復元できません。');return {...ref,blob:undefined,descriptor:Float32Array.from(ref.descriptor),url:restoreURL(ref.blob)};})};
+      return {...person,pendingRefs:(person.pendingRefs||[]).map(ref=>({...ref,url:ref.blob instanceof Blob?restoreURL(ref.blob):null})),refs:person.refs.map(ref=>{if(!(ref.blob instanceof Blob)||!ref.descriptor?.length)throw new Error('登録した顔写真を復元できません。');return {...ref,blob:undefined,descriptor:Float32Array.from(ref.descriptor),url:restoreURL(ref.blob)};})};
     });
     records=snapshot.records.map(record=>{
       if(!validId(record.id)||!(record.file instanceof Blob)||typeof record.file.name!=='string'||!Array.isArray(record.parts))throw new Error('読み込んだ写真を確認できません。');
@@ -670,7 +744,7 @@ async function applyUpdateSnapshot(snapshot){
     for(const event of snapshot.events)events.push(validateEvent(event,events));
   }catch(error){urls.forEach(releaseImageURL);throw error;}
   clearRecords();
-  for(const person of state.profiles)for(const ref of person.refs)releaseImageURL(ref.url);
+  for(const person of state.profiles)for(const ref of [...person.refs,...(person.pendingRefs||[])])releaseImageURL(ref.url);
   Object.assign(state,{profiles,records,events,source:snapshot.source||null,sourceName:String(snapshot.sourceName||''),activePerson:snapshot.activePerson,
     filter:['all','selected','review','blur','error'].includes(snapshot.filter)?snapshot.filter:'all',page:Math.max(0,Number(snapshot.page)||0),analyzedMode:snapshot.analyzedMode??null});
   for(const id of savedControlIds){if(id in (snapshot.controls||{})){if($(id).type==='checkbox')$(id).checked=!!snapshot.controls[id];else $(id).value=snapshot.controls[id];}}
@@ -681,6 +755,7 @@ async function applyUpdateSnapshot(snapshot){
   document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter===state.filter));
   renderGallery();
   requestAnimationFrame(()=>window.scrollTo(0,Math.max(0,Number(snapshot.scrollY)||0)));
+  if(migration.migrated)notify('新しい顔認識方式へ更新しました。写真・人物名・イベントは復元済みです。人物の顔を元写真から登録し直し、写真を解析してください。');
 }
 
 listen('add-person','click',()=>editPerson());
