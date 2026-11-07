@@ -1,4 +1,4 @@
-import {mountFaceEditor} from './face-editor.js?v=2.1.0';
+import {mountFaceEditor} from './face-editor.js?v=2.2.0';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -6,30 +6,30 @@ const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.roun
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
 const CONNECTION_KEY='photosorter-pc-session-v1';
-const credentials=JSON.parse(sessionStorage.getItem(CONNECTION_KEY)||'{}');
+const credentials=JSON.parse(localStorage.getItem(CONNECTION_KEY)||sessionStorage.getItem(CONNECTION_KEY)||'{}');
 let accessToken=credentials.accessToken||'',bootstrapToken=credentials.bootstrapToken||'',authenticated=false,autoConnect=false,connecting=false;
 const PLACEHOLDER='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120"><rect width="100%" height="100%" fill="#e9ece5"/></svg>');
 const imageCache=new Map(),imageQueue=[],imagePending=new Set();let imageActive=0;
-function saveCredentials(){sessionStorage.setItem(CONNECTION_KEY,JSON.stringify({accessToken,bootstrapToken}));}
+function saveCredentials(){localStorage.setItem(CONNECTION_KEY,JSON.stringify({accessToken,bootstrapToken}));sessionStorage.setItem(CONNECTION_KEY,JSON.stringify({accessToken,bootstrapToken}));}
 function apiURL(path){if(!path.startsWith('/api/'))throw Error('接続先の指定が不正です。');return API_BASE+path;}
-function authHeaders(){return accessToken?{Authorization:'Bearer '+accessToken}:{};}
-async function privateBlob(kind,id){
-  const response=await fetch(apiURL(`/api/${kind}/${encodeURIComponent(id)}`),{headers:authHeaders(),credentials:'omit',cache:'no-store',signal:AbortSignal.timeout(20000)});
+function authHeaders(projectId=data.currentProject?.id){return {...(accessToken?{Authorization:'Bearer '+accessToken}:{}),...(projectId?{'X-PhotoSorter-Project':projectId}:{})};}
+async function privateBlob(kind,id,projectId=data.currentProject?.id){
+  const response=await fetch(apiURL(`/api/${kind}/${encodeURIComponent(id)}`),{headers:authHeaders(projectId),credentials:'omit',cache:'no-store',signal:AbortSignal.timeout(20000)});
   if(!response.ok)throw Error('写真を表示できません。PCとの接続と元の写真を確認してください。');return response.blob();
 }
 function media(kind,id){
-  const key=kind+':'+id;
+  const key=(data.currentProject?.id||'')+':'+kind+':'+id;
   if(imageCache.has(key))return imageCache.get(key);
-  if(authenticated&&!imagePending.has(key)){imagePending.add(key);imageQueue.push({key,kind,id});queueMicrotask(pumpImages);}
+  if(authenticated&&!imagePending.has(key)){imagePending.add(key);imageQueue.push({key,kind,id,projectId:data.currentProject?.id});queueMicrotask(pumpImages);}
   return PLACEHOLDER;
 }
-function privateImage(kind,id,alt,loading='eager'){return `<img data-private-media="${esc(kind+':'+id)}" src="${media(kind,id)}" alt="${esc(alt)}" loading="${loading}">`;}
+function privateImage(kind,id,alt,loading='eager'){return `<img data-private-media="${esc((data.currentProject?.id||'')+':'+kind+':'+id)}" src="${media(kind,id)}" alt="${esc(alt)}" loading="${loading}">`;}
 async function pumpImages(){
   while(imageActive<4&&imageQueue.length){
     const item=imageQueue.shift();imageActive++;
     (async()=>{
       try{
-        const url=URL.createObjectURL(await privateBlob(item.kind,item.id));imageCache.set(item.key,url);
+        const url=URL.createObjectURL(await privateBlob(item.kind,item.id,item.projectId));imageCache.set(item.key,url);
         for(const img of document.querySelectorAll('[data-private-media]'))if(img.dataset.privateMedia===item.key)img.src=url;
         while(imageCache.size>256){const [key,value]=imageCache.entries().next().value;imageCache.delete(key);URL.revokeObjectURL(value);}
       }catch(error){for(const img of document.querySelectorAll('[data-private-media]'))if(img.dataset.privateMedia===item.key)img.title=error.message;}
@@ -72,9 +72,10 @@ async function refresh(){
   if(refreshing||!autoConnect)return;
   refreshing=true;
   try{
-    const incoming=await api('/api/state'),wasRunning=Boolean(data.job?.running);
+    const incoming=await api('/api/state'),wasRunning=Boolean(data.job?.running),previousProject=data.currentProject?.id;
     data=incoming.state||incoming;
     data.people ||= [];data.photos ||= [];data.events ||= [];data.settings ||= {};data.engine ||= {};data.job ||= {};
+    if(previousProject&&previousProject!==data.currentProject?.id)resetProjectView();
     connected=true;$('connection-notice').hidden=true;
     if(!data.people.some(person=>person.id===currentPerson))currentPerson=data.people[0]?.id||'';
     render();
@@ -116,7 +117,7 @@ async function perform(action,{message='PCに保存しました。',refreshDetai
 
 function updateControls(){
   const disabled=!connected||busy();
-  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode').forEach(node=>node.disabled=disabled);
+  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('#photo-form input,#photo-form select,#event-form input,#person-form input,#path-form input').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('[data-close]').forEach(node=>node.disabled=pending>0);
   $('scan-button').disabled=disabled||!data.photos.length;
@@ -166,7 +167,7 @@ function renderGallery(){
 }
 
 function render(){
-  $('app-version').textContent=`v${data.appVersion||'2.1.0'}`;
+  $('app-version').textContent=`v${data.appVersion||'2.2.0'}`;
   const engine=data.engine,gpu=engine.gpuName||engine.device||'';
   $('gpu-status').textContent=engine.error?'GPUの確認が必要':engine.ready?`GPU · ${gpu||engine.provider||'接続済み'}`:'GPUを準備中';
   $('gpu-status').classList.toggle('error',Boolean(engine.error));$('gpu-status').title=gpu;
@@ -180,7 +181,7 @@ function render(){
     if(Number(target)>0){$('target-unit').value=target>=1e6?'MB':'KB';$('target-size').value=String(target/(target>=1e6?1e6:1000));}
     $('export-mode').value=['people','any','all'].includes(data.settings.exportMode)?data.settings.exportMode:'people';settingsInitialized=true;
   }
-  renderPeople();renderEvents();renderGallery();updateControls();
+  renderProjects();renderPeople();renderEvents();renderGallery();updateControls();
 }
 
 function closeDialog(){
@@ -191,6 +192,34 @@ function showDialog(html){
   detailGeneration++;activePhotoId=null;detailImage=null;$('dialog-content').innerHTML=html;if(!$('dialog').open)$('dialog').showModal();
 }
 const dialogActions=primary=>`<div class="dialog-actions"><button type="button" class="outline-button" data-close>閉じる</button>${primary||''}</div>`;
+
+function resetProjectView(){
+  currentPerson='';filter='all';page=0;enrollMode=false;settingsInitialized=false;detailGeneration++;
+  activePhotoId=null;detailImage=null;editorPhotoId=null;editor?.destroy();editor=null;
+  if(editorImage){editorImage.width=editorImage.height=1;editorImage=null;}
+  $('dialog').close();$('dialog-content').replaceChildren();$('face-editor-dialog').close();$('face-editor-content').replaceChildren();
+  $('person-filter').value='';$('date-filter').value='';
+  document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));
+  for(const url of imageCache.values())URL.revokeObjectURL(url);imageCache.clear();imageQueue.length=0;
+}
+function renderProjects(){
+  const project=data.currentProject;
+  $('project-name').textContent=project?.name||'プロジェクト';
+  $('open-project').innerHTML=(data.projects||[]).map(item=>`<option value="${esc(item.id)}">${esc(item.name)}</option>`).join('');
+  if(project)$('open-project').value=project.id;
+  $('project-save-status').textContent=project?.savedAt?'保存 '+new Date(project.savedAt).toLocaleString():'変更はPCへ自動保存されます';
+}
+function projectDialog(kind){
+  if(busy())return;
+  const fresh=kind==='new';
+  showDialog(`<form id="project-form"><div class="dialog-body"><h2>${fresh?'新規プロジェクト':'プロジェクトを保存'}</h2><p>${fresh?'現在の作業を保存してから、空の写真一覧・人物登録で始めます。保存したプロジェクトは選択欄から開けます。':'写真一覧・人物登録・OK／NG・イベント・設定をPC内のプロジェクトとして保存します。'}</p><label class="dialog-field">プロジェクト名<input id="project-title" required maxlength="100" value="${esc(fresh?'新しいプロジェクト':data.currentProject?.name||'写真整理')}"></label></div>${dialogActions(`<button type="submit" class="primary-button" data-mutates>${fresh?'作成する':'保存する'}</button>`)}</form>`);
+  $('project-form').onsubmit=event=>{
+    event.preventDefault();const name=$('project-title').value.trim();if(!name)return;
+    closeDialog();void perform(()=>api(fresh?'/api/projects/new':'/api/projects/save',{name}),{message:fresh?'新規プロジェクトを作成しました。':'プロジェクトを保存しました。'});
+  };$('project-title').select();
+}
+$('save-project').onclick=()=>projectDialog('save');$('new-project').onclick=()=>projectDialog('new');
+$('open-project').onchange=event=>{const id=event.target.value;if(id&&id!==data.currentProject?.id)void perform(()=>api('/api/projects/open',{id}),{message:'プロジェクトを開きました。'});};
 
 async function pickSource(){if(!busy())await openFolder('source');}
 
@@ -355,7 +384,7 @@ function showExportResult(result={}){
 }
 
 function help(){
-  showDialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。このPCの写真を読み込みます。</li><li>写真を開き、<strong>顔を選んで人物を登録</strong>。未解析の写真は<strong>この写真を解析</strong>で顔を探せます。顔が見つからなければ四角で囲んで指定します。</li><li><strong>写真を解析</strong>でまとめて人物を分類します。写真を開き、顔ごとの<strong>OK・本人／NG・別人</strong>で修正します。正しい名前を選んでOKにすると、その人へ訂正できます。</li><li>必要に応じて日付・イベント・容量を設定し、<strong>フォルダへ出力</strong>します。集合写真は各人のフォルダにコピーします。</li></ol><p>人物登録・OK／NG・イベントはPCに自動保存し、次回起動時も復元します。ブラウザの画面を閉じても登録は残ります。写真と顔の解析結果を外部サービスへ送信しません。</p><p>GPUが利用できない場合は画面に理由を表示します。認識のための機械学習処理はPC内のプログラムで行います。</p><p class="status-details">${esc(data.engine.gpuName||'')}<br>${esc(data.engine.provider||'')}<br>${esc(data.engine.engineId||'')}</p></div>${dialogActions('')}`);
+  showDialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。このPCの写真を読み込みます。</li><li>写真を開き、<strong>顔を選んで人物を登録</strong>。未解析の写真は<strong>この写真を解析</strong>で顔を探せます。顔が見つからなければ四角で囲んで指定します。</li><li><strong>写真を解析</strong>でまとめて人物を分類します。写真を開き、顔ごとの<strong>OK・本人／NG・別人</strong>で修正します。正しい名前を選んでOKにすると、その人へ訂正できます。</li><li>必要に応じて日付・イベント・容量を設定し、<strong>フォルダへ出力</strong>します。集合写真は各人のフォルダにコピーします。</li></ol><p><strong>プロジェクトを保存</strong>で名前を付けて保存します。<strong>新規プロジェクト</strong>は今の作業を保存し、空の写真一覧・人物登録から始めます。保存済みの作業は<strong>プロジェクトを開く</strong>の選択欄から戻せます。</p><p>人物登録・OK／NG・イベントはPCへ自動保存も行い、次回も復元します。初回の接続登録後は、WindowsへサインインしてPagesを開くだけで使えます。写真と顔の解析結果を外部サービスへ送信しません。</p><p>GPUが利用できない場合は画面に理由を表示します。認識のための機械学習処理はPC内のプログラムで行います。</p><p class="status-details">${esc(data.engine.gpuName||'')}<br>${esc(data.engine.provider||'')}<br>${esc(data.engine.engineId||'')}</p></div>${dialogActions('')}`);
 }
 
 for(const id of ['choose-source','empty-import'])$(id).onclick=()=>void pickSource();
@@ -378,7 +407,7 @@ $('cancel-job').onclick=async()=>{try{await api('/api/cancel',{});await refresh(
 $('help-button').onclick=help;
 $('shutdown-button').onclick=async()=>{
   if(busy())return;
-  try{await api('/api/shutdown',{});clearTimeout(pollTimer);connected=false;updateControls();$('save-status').textContent='保存して終了しました';$('connection-notice').hidden=false;$('connection-notice').textContent='PC内のプログラムを終了しました。このタブを閉じてください。次回は起動用ファイルから開くと人物登録とOK／NGが復元します。';}
+  try{await api('/api/shutdown',{});clearTimeout(pollTimer);connected=false;updateControls();$('save-status').textContent='保存して終了しました';$('connection-notice').hidden=false;$('connection-notice').textContent='PC内のプログラムを終了しました。このタブを閉じてください。次のWindowsサインイン時に自動起動します。今すぐ再開する場合は起動用ファイルを使ってください。';}
   catch(error){toast(error.message,true);}
 };
 $('dialog').onclick=event=>{if(event.target.closest('[data-close]'))closeDialog();};
@@ -391,7 +420,7 @@ async function connect(){
   $('connection-message').textContent='PC内の認識プログラムに接続しています…';
   try{
     if(bootstrapToken){const session=await api('/api/session',{token:bootstrapToken});accessToken=session.accessToken;bootstrapToken='';saveCredentials();}
-    if(!accessToken){$('connection-message').textContent='PC側のStart-PhotoSorter.cmdを起動してください。認証付きでこの画面が開きます。';return;}
+    if(!accessToken){$('connection-message').textContent='初回だけStart-PhotoSorter.cmdから接続を登録してください。以後はPagesを開くだけで接続できます。';return;}
     authenticated=true;autoConnect=true;await refresh();
     if(connected){$('connect-panel').hidden=true;$('connection-notice').hidden=true;}
   }catch(error){connectionError('接続できません。PC側を起動し、ブラウザのローカル接続を許可してから再試行してください。 '+error.message);}
@@ -405,7 +434,7 @@ async function start(){
     if(token){bootstrapToken=token;accessToken='';saveCredentials();}
     if(!HOSTED){await connect();return;}
     $('connect-panel').hidden=false;
-    if(!bootstrapToken&&!accessToken){$('connection-message').textContent='PC側のStart-PhotoSorter.cmdを起動すると、この画面に接続できます。';return;}
+    if(!bootstrapToken&&!accessToken){$('connection-message').textContent='初回だけPC側のStart-PhotoSorter.cmdで接続を登録してください。次回からはこのページを開くだけで使えます。';return;}
     let permission='prompt';
     for(const name of ['loopback-network','local-network-access']){
       try{permission=(await navigator.permissions.query({name})).state;break;}catch{}
