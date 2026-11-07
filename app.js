@@ -1,9 +1,11 @@
-import {mountFaceEditor} from './face-editor.js?v=2.2.2';
+import {mountFaceEditor} from './face-editor.js?v=2.2.3';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.round(Number(bytes||0)/1000)} KB`;
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
+const UI_VERSION='2.2.3';
+const PUBLIC_VERSION_URL='https://murajun620-crypto.github.io/photo_sorter_web/version.json';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
 const CONNECTION_KEY='photosorter-pc-session-v1';
 const credentials=JSON.parse(localStorage.getItem(CONNECTION_KEY)||sessionStorage.getItem(CONNECTION_KEY)||'{}');
@@ -40,6 +42,7 @@ async function pumpImages(){
 let data={people:[],photos:[],events:[],settings:{},engine:{},job:{}};
 let currentPerson='',filter='all',page=0,enrollMode=false,pending=0,connected=false,pollTimer,refreshing=false;
 let activePhotoId=null,detailGeneration=0,detailImage=null,editor=null,editorImage=null,editorPhotoId=null,toastTimer,lastJobKey='',settingsInitialized=false;
+let checkingUpdate=false;
 const perPage=48;
 const UNCLASSIFIED='__unclassified__';
 const busy=()=>pending>0||Boolean(data.job?.running);
@@ -118,6 +121,7 @@ async function perform(action,{message='PCに保存しました。',refreshDetai
 
 function updateControls(){
   const disabled=!connected||busy();
+  $('check-update').disabled=checkingUpdate||busy();
   document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('#photo-form input,#photo-form select,#event-form input,#person-form input,#path-form input').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('[data-close]').forEach(node=>node.disabled=pending>0);
@@ -170,7 +174,8 @@ function renderGallery(){
 }
 
 function render(){
-  $('app-version').textContent=`v${data.appVersion||'2.2.2'}`;
+  $('app-version').textContent=`v${UI_VERSION}`;
+  $('app-version').title=`画面 v${UI_VERSION} / PC v${data.appVersion||'未接続'}`;
   const engine=data.engine,gpu=engine.gpuName||engine.device||'';
   $('gpu-status').textContent=engine.error?'GPUの確認が必要':engine.ready?`GPU · ${gpu||engine.provider||'接続済み'}`:'GPUを準備中';
   $('gpu-status').classList.toggle('error',Boolean(engine.error));$('gpu-status').title=gpu;
@@ -195,6 +200,32 @@ function showDialog(html){
   detailGeneration++;activePhotoId=null;detailImage=null;$('dialog-content').innerHTML=html;if(!$('dialog').open)$('dialog').showModal();
 }
 const dialogActions=primary=>`<div class="dialog-actions"><button type="button" class="outline-button" data-close>閉じる</button>${primary||''}</div>`;
+
+function compareVersions(left,right){
+  if(!/^\d+\.\d+\.\d+$/.test(left)||!/^\d+\.\d+\.\d+$/.test(right))throw Error('バージョン情報の形式が正しくありません。');
+  const a=left.split('.').map(Number),b=right.split('.').map(Number);
+  for(let i=0;i<3;i++)if(a[i]!==b[i])return a[i]>b[i]?1:-1;
+  return 0;
+}
+async function checkForUpdate(){
+  if(checkingUpdate||busy())return;
+  checkingUpdate=true;$('check-update').textContent='確認中…';updateControls();
+  try{
+    const url=new URL(PUBLIC_VERSION_URL);url.searchParams.set('check',String(Date.now()));
+    const response=await fetch(url,{cache:'no-store',credentials:'omit',redirect:'error',signal:AbortSignal.timeout(12000)});
+    if(!response.ok)throw Error('公開版のバージョンを取得できませんでした。');
+    const latest=await response.json();
+    if(typeof latest.version!=='string')throw Error('バージョン情報を読み取れませんでした。');
+    if(compareVersions(latest.version,UI_VERSION)<=0){toast(`画面は最新版です（v${UI_VERSION}）。`);return;}
+    showDialog(`<div class="dialog-body"><h2>新しい画面があります</h2><p>現在 v${UI_VERSION} → 最新 v${esc(latest.version)}</p><p>人物登録・OK／NG・プロジェクトはPCに保存したままです。</p><p>${HOSTED?'画面を再読み込みして更新します。PC内の認識プログラムは、このボタンでは更新しません。':'PCに同梱された画面はPCアプリと一緒に更新します。公開画面を使う場合はStart-PhotoSorter.cmdから開いてください。'}</p></div>${dialogActions(HOSTED?'<button type="button" id="apply-update" class="primary-button" data-mutates>画面を更新する</button>':'')}`);
+    if($('apply-update'))$('apply-update').onclick=()=>{
+      if(busy())return toast('現在の処理が終わってから画面を更新してください。',true);
+      const target=new URL(location.href);target.hash='';target.searchParams.set('v',latest.version);target.searchParams.set('updated',String(Date.now()));location.replace(target.href);
+    };
+  }catch{toast('更新を確認できませんでした。インターネット接続を確認して再試行してください。',true);}
+  finally{checkingUpdate=false;$('check-update').textContent='更新確認';updateControls();}
+}
+$('check-update').onclick=()=>void checkForUpdate();
 
 function resetProjectView(){
   currentPerson='';filter='all';page=0;enrollMode=false;settingsInitialized=false;detailGeneration++;
