@@ -1,0 +1,5 @@
+* text=auto eol=lf
+models/*-shard* binary
+models/*-weights_manifest.json -text
+vendor/* -text -whitespace
+licenses/* -text -whitespace
