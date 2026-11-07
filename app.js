@@ -1,4 +1,4 @@
-import {mountFaceEditor} from './face-editor.js?v=2.2.1';
+import {mountFaceEditor} from './face-editor.js?v=2.2.2';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
@@ -41,6 +41,7 @@ let data={people:[],photos:[],events:[],settings:{},engine:{},job:{}};
 let currentPerson='',filter='all',page=0,enrollMode=false,pending=0,connected=false,pollTimer,refreshing=false;
 let activePhotoId=null,detailGeneration=0,detailImage=null,editor=null,editorImage=null,editorPhotoId=null,toastTimer,lastJobKey='',settingsInitialized=false;
 const perPage=48;
+const UNCLASSIFIED='__unclassified__';
 const busy=()=>pending>0||Boolean(data.job?.running);
 const getPhoto=id=>data.photos.find(photo=>photo.id===id);
 const getPerson=id=>data.people.find(person=>person.id===id);
@@ -135,15 +136,15 @@ function updateControls(){
 
 function filtered(){
   const person=$('person-filter').value,date=$('date-filter').value;
-  return data.photos.filter(photo=>(filter==='all'||filter==='selected'&&photo.selected||filter==='review'&&photo.needsReview||filter==='unanalysed'&&!photo.analyzed||filter==='blur'&&(photo.blurLabel==='blur'||photo.blurry))&&(!person||photo.matchedIds?.includes(person))&&(!date||photo.date===date));
+  return data.photos.filter(photo=>(filter==='all'||filter==='selected'&&photo.selected||filter==='review'&&photo.needsReview||filter==='unanalysed'&&!photo.analyzed||filter==='blur'&&(photo.blurLabel==='blur'||photo.blurry))&&(!person||(person===UNCLASSIFIED?photo.analyzed&&!photo.error&&!photo.matchedIds?.length:photo.matchedIds?.includes(person)))&&(!date||photo.date===date));
 }
 function visible(){return filtered().slice(page*perPage,(page+1)*perPage);}
 
 function renderPeople(){
   $('people-list').innerHTML=data.people.length?data.people.map(person=>`<button class="person ${person.id===currentPerson?'active':''}" data-person="${esc(person.id)}"><span class="avatar">${esc(person.name.slice(0,1))}</span><span class="person-label">${esc(person.name)}<small>登録 ${person.referenceCount??0}件 · NG ${person.negativeCount??0}件</small></span></button>`).join(''):'<p class="hint">写真から顔を登録すると、ここに人物が並びます。</p>';
   const value=$('person-filter').value;
-  $('person-filter').innerHTML='<option value="">すべての人物</option>'+data.people.map(person=>`<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('');
-  $('person-filter').value=data.people.some(person=>person.id===value)?value:'';
+  $('person-filter').innerHTML=`<option value="">すべての人物</option><option value="${UNCLASSIFIED}">人物未分類</option>`+data.people.map(person=>`<option value="${esc(person.id)}">${esc(person.name)}</option>`).join('');
+  $('person-filter').value=value===UNCLASSIFIED||data.people.some(person=>person.id===value)?value:'';
 }
 
 function renderEvents(){
@@ -161,6 +162,7 @@ function renderGallery(){
   }).join('')||(data.photos.length?'<p class="filter-empty">この条件の写真はありません。</p>':'');
   $('empty-state').querySelector('p').textContent=data.people.some(person=>person.referenceCount>0)?'登録済みの顔とOK／NGを使えます。写真フォルダを開き、「写真を解析」を押してください。':'写真はこのPCから読み込みます。人物を登録して解析すると、友達ごとに分類できます。';
   $('empty-state').hidden=data.photos.length>0;$('visible-count').textContent=`${all.length}枚を表示対象`;
+  $('unclassified-hint').hidden=$('person-filter').value!==UNCLASSIFIED;
   $('page-label').textContent=`${page+1} / ${pages}`;$('prev-page').disabled=page<=0;$('next-page').disabled=page>=pages-1;
   $('total-count').textContent=data.photos.length;$('selected-count').textContent=data.photos.filter(photo=>photo.selected&&!photo.error).length;
   $('review-count').textContent=data.photos.filter(photo=>photo.needsReview).length;$('person-count').textContent=data.people.length;
@@ -168,7 +170,7 @@ function renderGallery(){
 }
 
 function render(){
-  $('app-version').textContent=`v${data.appVersion||'2.2.1'}`;
+  $('app-version').textContent=`v${data.appVersion||'2.2.2'}`;
   const engine=data.engine,gpu=engine.gpuName||engine.device||'';
   $('gpu-status').textContent=engine.error?'GPUの確認が必要':engine.ready?`GPU · ${gpu||engine.provider||'接続済み'}`:'GPUを準備中';
   $('gpu-status').classList.toggle('error',Boolean(engine.error));$('gpu-status').title=gpu;
@@ -297,7 +299,7 @@ async function openPhoto(id){
 async function renderPhotoDetail(id){
   const photo=getPhoto(id);if(!photo)return;
   const generation=++detailGeneration;activePhotoId=id;
-  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!photo.analyzed?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">顔が見つからない人物にも使えます。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
+  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!photo.analyzed?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">背中姿など顔が見えない場合は、背番号などを確認して人物を指定できます。この指定は顔の学習例には追加しません。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
   paintFaceAnswers(photo);
   let peopleChanged=false;
   $('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.onchange=()=>peopleChanged=true);
