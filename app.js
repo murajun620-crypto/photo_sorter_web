@@ -1,10 +1,10 @@
-import {mountFaceEditor} from './face-editor.js?v=2.6.0';
+import {mountFaceEditor} from './face-editor.js?v=2.7.0';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.round(Number(bytes||0)/1000)} KB`;
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
-const UI_VERSION='2.6.0';
+const UI_VERSION='2.7.0';
 const DEFAULT_TEAM_ID='team-default';
 const PUBLIC_VERSION_URL='https://murajun620-crypto.github.io/photo_sorter_web/version.json';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
@@ -88,18 +88,20 @@ async function refresh(){
     data.sharedUniforms ||= [];data.jerseyGameKits ||= [];
     data.sharedRoster ||= [];
     data.sharedTeams ||= [];
+    data.jerseySetup ||= [];
     if(previousProject&&previousProject!==data.currentProject?.id)resetProjectView();
     connected=true;$('connection-notice').hidden=true;
     if(!data.people.some(person=>person.id===currentPerson))currentPerson=data.people[0]?.id||'';
     render();
     if(wasRunning&&!data.job.running){
-      const job=data.job,key=`${job.type}:${job.message}:${job.error}:${JSON.stringify(job.result||{})}`;
+      const job=data.job,key=`${job.id||''}:${job.type}:${job.message}:${job.error}:${JSON.stringify(job.result||{})}`;
       if(lastJobKey!==key){
         lastJobKey=key;
         if(job.error&&job.type!=='folder')toast(job.error,true);
         else if(job.cancelled)toast('処理を中止しました。完了した内容はPCに保存されています。');
         else if(job.type==='export')showExportResult(job.result);
         else if(job.type==='infer')showInferredGames(job.result);
+        else if(job.type==='analyze'&&job.result?.warnings?.length)showAnalysisNotice(job.result);
         else if(job.type!=='folder')toast((job.result?.message||'処理が完了し、PCに保存しました。')+(job.result?.errors?.length?` ${job.result.errors.length}件は処理できませんでした。`:''),Boolean(job.result?.errors?.length));
       }
       if(activePhotoId&&$('dialog').open)void renderPhotoDetail(activePhotoId);
@@ -133,12 +135,11 @@ async function perform(action,{message='PCに保存しました。',refreshDetai
 function updateControls(){
   const disabled=!connected||busy();
   $('check-update').disabled=checkingUpdate||busy();
-  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project,#add-jersey-game,#jersey-game,#assign-jersey-game,#own-uniform,#opponent-uniform,#add-jersey-number,#read-jerseys').forEach(node=>node.disabled=disabled);
+  document.querySelectorAll('[data-mutates],#choose-source,#empty-import,#enter-source,#scan-button,#recognize-jerseys,#add-person,#choose-face-photo,#add-event,#export-folder,#select-visible,#clear-visible,#compress,#target-size,#target-unit,#export-mode,#save-project,#new-project,#open-project,#add-jersey-game,#jersey-game,#assign-jersey-game,#own-uniform,#opponent-uniform,#add-jersey-number,#edit-game-team-roster').forEach(node=>node.disabled=disabled);
   $('own-uniform').disabled=disabled||!sharedKit||!data.photos.length;
   $('opponent-uniform').disabled=disabled||!activeGame||!data.photos.length;
   for(const id of ['infer-jersey-games','refresh-photo-times','photo-sort','shared-kit-select','rename-shared-kit','rename-jersey-game','game-registration'])$(id).disabled=disabled;
-  $('infer-jersey-games').disabled=disabled||!data.photos.length||data.settings.gameRegistration==='none';$('refresh-photo-times').disabled=disabled||!data.photos.length;
-  $('add-jersey-game').disabled=disabled||data.settings.gameRegistration==='none';
+  $('infer-jersey-games').disabled=disabled||!data.photos.length;$('refresh-photo-times').disabled=disabled||!data.photos.length;
   $('rename-jersey-game').disabled=disabled||!activeGame;$('rename-shared-kit').disabled=disabled||!sharedKit;
   $('game-kit-types').disabled=disabled||!activeGame;
   $('assign-jersey-game').disabled=disabled||!activeGame||!filtered().length;
@@ -147,7 +148,7 @@ function updateControls(){
   $('use-common-roster').disabled=disabled||!activeGame;
   for(const id of ['roster-team','add-roster-team','rename-roster-team'])$(id).disabled=disabled;
   $('game-roster-team').disabled=disabled||!activeGame;
-  $('read-jerseys').disabled=disabled||!data.engine.jersey?.ready||!filtered().some(p=>p.jerseyGameId);
+  $('edit-game-team-roster').disabled=disabled||!activeGame;
   document.querySelectorAll('#photo-form input,#photo-form select,#event-form input,#person-form input,#path-form input').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('[data-close]').forEach(node=>node.disabled=pending>0);
   $('scan-button').disabled=disabled||!data.photos.length;
@@ -159,6 +160,7 @@ function updateControls(){
   if(job.running){
     const titles={folder:'Windowsのフォルダ選択を待っています',register:'人物と顔をPCに登録しています',initialize:'GPUを準備しています',import:'写真を読み込んでいます',times:'撮影日時を読み込んでいます',infer:'日時から試合を推定しています',analyze:'GPUで写真を解析しています',jersey:'GPUで背番号とチームを確認しています',uniform:'ユニフォームの見本を保存しています',export:'写真を出力しています'};
     $('progress-title').textContent=titles[job.type]||'PCで処理しています';$('progress-detail').textContent=job.message||'';
+    if(job.type==='analyze')$('progress-title').textContent=job.phase==='jerseys'?'2/2 背番号を解析しています':job.recognizeJerseys?'1/2 全写真の顔を解析しています':'顔を解析しています';
     if(job.total>0)$('progress-bar').value=job.done/job.total*100;else $('progress-bar').removeAttribute('value');
   }
 }
@@ -197,7 +199,7 @@ function renderJerseys(){
   const currentGame=games.find(game=>game.id===activeGame);$('game-time-summary').textContent=currentGame?.startAt?`${currentGame.inferred?'仮登録：':''}${currentGame.startAt.replace('T',' ').slice(0,19)}〜${currentGame.endAt?.replace('T',' ').slice(0,19)||''} · ${data.photos.filter(p=>p.jerseyGameId===activeGame).length}枚`:'';
   const gameTeamId=currentGame?.teamId||DEFAULT_TEAM_ID;
   $('game-roster-team').innerHTML=teamOptions;$('game-roster-team').value=gameTeamId;
-  $('game-roster-status').textContent=currentGame?`${teams.find(t=>t.id===gameTeamId)?.name||'チーム不明'}の番号表を使います。味方・相手の見本、番号変更、OK／NGもこの試合・チームごとに切り替わります。`:'試合を追加すると、保存したチーム名簿を選べます。';
+  $('game-roster-status').textContent=currentGame?`${teams.find(t=>t.id===gameTeamId)?.name||'チーム不明'}の保存済み名簿を使います。`:'先に試合を登録してください。';
   $('use-common-roster').checked=currentGame?.useCommonRoster!==false;
   const mode=data.settings.gameRegistration||'auto';$('game-registration').value=mode;
   $('game-registration-hint').textContent=mode==='auto'?`撮影が${data.settings.inferGapMinutes||30}分以上空いた所で試合を仮登録します。後から名前・写真の範囲を編集できます。`:mode==='manual'?'読み込みでは試合を作りません。「＋ 試合」で登録し、写真の範囲を指定してください。':'読み込みでは試合を作りません。顔・日付・イベントで整理できます。既存の試合と割り当ては残します。';
@@ -212,8 +214,31 @@ function renderJerseys(){
   $('jersey-samples').innerHTML=samples.map((sample,index)=>`<div><span>${sample.side==='own'?'この試合の味方':'相手'}の見本 ${index+1}</span>${sample.side==='own'?`<button class="tiny-button" data-promote-sample="${esc(sample.id)}" data-mutates>共通へ</button>`:''}<button class="tiny-button" data-remove-sample="${esc(sample.id)}" data-mutates>削除</button></div>`).join('');
   $('jersey-roster').innerHTML=roster.map(row=>`<div><span>#${esc(row.number)} → ${esc(getPerson(row.personId)?.name||'人物不明')}</span><button class="tiny-button" data-edit-number="${esc(row.id)}" data-mutates>編集</button><button class="tiny-button" data-remove-number="${esc(row.id)}" data-mutates>削除</button></div>`).join('')||'<p class="hint">試合だけの変更はありません。</p>';
   const ready=data.engine.jersey?.ready;
-  const ownReady=samples.some(s=>s.side==='own')||types.some(type=>selectedKits.includes(type.id)&&type.sampleCount>0);
-  $('jersey-status').textContent=!ready?(data.engine.jersey?.error||'背番号認識の準備を待っています。'):!activeGame?'日時から試合を仮登録するか、試合を追加してください。':!ownReady||!samples.some(s=>s.side==='opponent')?'この試合で使う味方の種類を選び、相手の見本を登録してください。色が似ている場合は確認に回します。':'GPUで背番号を読みます。試合未設定の写真は読み取り対象に含めません。';
+  const setup=data.jerseySetup.find(s=>s.gameId===activeGame),missingLabels={team:'チーム',own:'味方のユニフォーム',opponent:'相手の見本',roster:'名簿の背番号と人物'};
+  $('jersey-status').textContent=!ready?(data.engine.jersey?.error||'背番号認識の準備を待っています。'):!activeGame?'先に試合を登録してください。':setup?.missing?.length?setup.missing.map(key=>missingLabels[key]).join('・')+'を設定してください。':'設定完了。「写真を解析」で顔 → 背番号の順に認識します。';
+}
+
+function goToSetup(step){
+  if(step==='source')return void pickSource();
+  const target={games:'games-settings',team:'team-settings',opponent:'opponent-settings',analyze:'analysis-controls'}[step];if(!target)return;
+  if(step==='team'&&data.jerseySetup.find(s=>s.gameId===activeGame)?.missing?.includes('own'))$('uniform-library').open=true;
+  $(target).scrollIntoView({behavior:'smooth',block:'start'});
+}
+document.querySelectorAll('[data-setup-step]').forEach(button=>button.onclick=()=>goToSetup(button.dataset.setupStep));
+
+function renderWorkflow(){
+  const count=data.photos.length,on=$('recognize-jerseys').checked,used=(data.jerseySetup||[]).filter(s=>s.photoCount>0),unassigned=data.photos.filter(p=>!p.jerseyGameId).length,ready=used.filter(s=>s.ready),teamReady=used.filter(s=>!s.missing.some(k=>['team','own','roster'].includes(k))).length,opponentReady=used.filter(s=>!s.missing.includes('opponent')).length;
+  $('flow-source').textContent=count?`${count}枚`:'未読み込み';$('flow-games').textContent=on?(data.jerseyGames.length?`${data.jerseyGames.length}試合${unassigned?'・未設定'+unassigned+'枚':''}`:'未登録'):'任意';
+  $('flow-team').textContent=on?(used.length?`${teamReady}/${used.length}試合 設定済み`:'未設定'):'任意';$('flow-opponent').textContent=on?(used.length?`${opponentReady}/${used.length}試合 設定済み`:'未設定'):'任意';
+  const complete={source:count>0,games:on?data.jerseyGames.length>0&&!unassigned:true,team:on?used.length>0&&teamReady===used.length:true,opponent:on?used.length>0&&opponentReady===used.length:true,analyze:false};
+  document.querySelectorAll('[data-flow-step]').forEach(node=>node.classList.toggle('complete',complete[node.dataset.flowStep]));
+  const targetCount=ready.reduce((n,s)=>n+s.photoCount,0);
+  $('analysis-plan').textContent=!count?'フォルダを読み込んで始めます。':!on?`読み込んだ全${count}枚の顔を解析します。`:`読み込んだ全${count}枚の顔 → 試合を設定した写真の背番号を解析します。${!data.jerseyGames.length?'背番号認識には試合の登録が必要です。':`${targetCount}枚は背番号の設定済み${used.length>ready.length?'・未設定の試合があります':''}${unassigned?'・試合未設定 '+unassigned+'枚':''}。`}`;
+}
+
+function showAnalysisNotice(result){
+  showDialog(`<div class="dialog-body"><h2>解析結果</h2><p>${esc(result.message)}</p><ul class="analysis-warnings">${result.warnings.map(item=>`<li>${esc(item.message)}</li>`).join('')}</ul>${result.errors?.length?`<p>${result.errors.length}件は写真を読み込めませんでした。写真のエラー表示を確認してください。</p>`:''}<p>設定後にもう一度「写真を解析」を押すと、解析済みの顔を使って背番号を確認できます。</p></div>${dialogActions('<button type="button" id="analysis-setup" class="primary-button">設定を確認する</button>')}`);
+  $('analysis-setup').onclick=()=>{const first=result.warnings[0],setup=data.jerseySetup.find(s=>s.gameId===first.gameId);if(setup)activeGame=setup.gameId;closeDialog();renderJerseys();updateControls();goToSetup(['no_games','unassigned'].includes(first.code)?'games':setup?.missing.includes('opponent')&&!setup.missing.some(k=>['team','own','roster'].includes(k))?'opponent':'team');};
 }
 
 function editJerseyGame(existing=null){
@@ -290,7 +315,7 @@ $('jersey-game').onchange=event=>{activeGame=event.target.value;renderJerseys();
 $('assign-jersey-game').onclick=assignJerseyRange;$('add-jersey-number').onclick=()=>addJerseyNumber();$('add-game-number').onclick=()=>addJerseyNumber('game');
 $('own-uniform').onclick=()=>chooseUniform('own');$('opponent-uniform').onclick=()=>chooseUniform('opponent');
 $('cancel-uniform').onclick=()=>{uniformEnroll=null;$('uniform-notice').hidden=true;};
-$('read-jerseys').onclick=()=>void perform(()=>api('/api/jersey/analyze',{ids:filtered().map(photo=>photo.id)}),{message:null});
+$('edit-game-team-roster').onclick=()=>void perform(async()=>{const teamId=data.jerseyGames.find(g=>g.id===activeGame)?.teamId;await api('/api/teams/select',{teamId});$('team-library').open=true;$('team-library').scrollIntoView({behavior:'smooth',block:'start'});},{message:null});
 $('jersey-samples').onclick=event=>{const promoted=event.target.closest('[data-promote-sample]')?.dataset.promoteSample;if(promoted)return promoteUniform(promoted);const id=event.target.closest('[data-remove-sample]')?.dataset.removeSample;if(id)void perform(()=>api('/api/jersey/sample-delete',{id}),{message:'見本を削除しました。'});};
 $('jersey-roster').onclick=event=>{const edit=event.target.closest('[data-edit-number]')?.dataset.editNumber;if(edit)return addJerseyNumber('game',data.jerseyRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-number]')?.dataset.removeNumber;if(id)void perform(()=>api('/api/jersey/roster',{id,delete:true}),{message:'この試合の番号変更を削除しました。選んだチームの名簿を再び使います。'});};
 $('shared-roster').onclick=event=>{const edit=event.target.closest('[data-edit-common]')?.dataset.editCommon;if(edit)return addJerseyNumber('common',data.sharedRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-common]')?.dataset.removeCommon;if(id){const teamId=data.sharedRoster.find(row=>row.id===id)?.teamId;void perform(()=>api('/api/roster',{id,teamId,delete:true}),{message:'このチームの番号登録を削除しました。試合だけの設定は残ります。'});}};
@@ -359,11 +384,12 @@ function render(){
   $('capture-time-status').textContent=data.needsPhotoTimes>0?'撮影時刻を読み込んでいます。完了すると秒単位で並び替えます。':'撮影日時順です。撮影時刻がない写真はファイル更新日時や日付で表示します。';
   if(!settingsInitialized){
     $('photo-sort').value=data.settings.photoSort==='asc'?'asc':'desc';
+    $('recognize-jerseys').checked=data.settings.recognizeJerseys!==false;
     const target=data.settings.targetBytes;$('compress').checked=target!==null;
     if(Number(target)>0){$('target-unit').value=target>=1e6?'MB':'KB';$('target-size').value=String(target/(target>=1e6?1e6:1000));}
     $('export-mode').value=['people','any','all'].includes(data.settings.exportMode)?data.settings.exportMode:'people';settingsInitialized=true;
   }
-  renderProjects();renderPeople();renderEvents();renderJerseys();renderGallery();updateControls();
+  renderProjects();renderPeople();renderEvents();renderJerseys();renderGallery();renderWorkflow();updateControls();
 }
 
 function closeDialog(){
@@ -516,7 +542,7 @@ async function openPhoto(id){
 async function renderPhotoDetail(id){
   const photo=getPhoto(id);if(!photo)return;
   const generation=++detailGeneration;activePhotoId=id;
-  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!(photo.faceAnalyzed??photo.analyzed)?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.captureLabel||photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">背中姿など顔が見えない場合は、背番号などを確認して人物を指定できます。この指定は顔の学習例には追加しません。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
+  $('dialog-content').innerHTML=`<form id="photo-form"><div class="dialog-body"><h2 class="photo-detail-title">${esc(photo.name)}</h2><div class="local-photo-stage"><canvas id="photo-scene" aria-label="写真内の顔を番号付きで表示"></canvas></div><div class="local-photo-actions"><button type="button" id="register-from-photo" class="outline-button" data-mutates>顔を選んで人物を登録</button>${!(photo.faceAnalyzed??photo.analyzed)?'<button type="button" id="analyze-photo" class="primary-button" data-mutates>この写真の顔を解析</button>':''}</div><p class="detail-info">${esc(photo.relative||photo.name)}<br>${esc(photo.captureLabel||photo.dateSource||'')} ${photo.error?`<br>${esc(photo.error)}`:''}</p><h3 class="detail-heading">顔ごとに確認・修正</h3><p class="hint">合っていればOK。違っていればNG、または正しい人物名を選んでOK。修正はすぐに保存され、ほかの写真の判定にも使います。</p><div class="face-answer-list" id="face-answer-list"></div><p id="photo-answer-status" class="photo-answer-status" role="status"></p><label class="dialog-field">分類する日付<input id="photo-date" type="date" value="${validDate(photo.date)?photo.date:''}"></label><label class="dialog-field">写真の鮮明さ<select id="photo-blur"><option value="">指定しない</option><option value="sharp" ${photo.blurLabel==='sharp'?'selected':''}>鮮明な写真</option><option value="blur" ${photo.blurLabel==='blur'?'selected':''}>ボケた写真</option></select></label><details><summary>写っている人物を写真全体に手動指定</summary><p class="hint">背中姿など顔が見えない場合は、背番号などを確認して人物を指定できます。この指定は顔の学習例には追加しません。顔のOK／NGでは訂正した人物だけ更新します。</p><div class="detail-pills">${data.people.map(person=>`<label><input type="checkbox" name="photo-person" value="${esc(person.id)}" ${photo.matchedIds?.includes(person.id)?'checked':''}>${esc(person.name)}</label>`).join('')}</div></details><label class="check-line"><input type="checkbox" id="photo-selected" ${photo.selected?'checked':''}> この写真を出力対象にする</label><p class="persist-caption">人物登録・OK／NG・写真の設定は、次回起動時も復元します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>写真の設定を保存して閉じる</button>')}</form>`;
   paintFaceAnswers(photo);
   const jerseyPosition=photo.jerseys?.length?$('face-answer-list').previousElementSibling.previousElementSibling:$('photo-date').closest('label');
   jerseyPosition.insertAdjacentHTML('beforebegin',`<section><h3 class="detail-heading">背番号と試合</h3><label class="dialog-field">この写真の試合<select id="photo-jersey-game"><option value="">試合未設定</option>${(data.jerseyGames||[]).map(game=>`<option value="${esc(game.id)}" ${game.id===photo.jerseyGameId?'selected':''}>${esc(game.name)}</option>`).join('')}</select></label><button id="read-photo-jersey" type="button" class="outline-button" data-mutates>この写真の背番号を読み直す</button><div id="jersey-result-list"></div></section>`);
@@ -535,7 +561,7 @@ async function renderPhotoDetail(id){
   };
   $('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.onchange=()=>peopleChanged=true);
   $('register-from-photo').onclick=()=>{closeDialog();void openEnrollment(id);};
-  if($('analyze-photo'))$('analyze-photo').onclick=()=>void perform(()=>api('/api/analyze',{ids:[id]}),{message:null});
+  if($('analyze-photo'))$('analyze-photo').onclick=()=>void perform(()=>api('/api/analyze',{ids:[id],recognizeJerseys:false}),{message:null});
   $('photo-form').onsubmit=async event=>{event.preventDefault();const fields={id,date:$('photo-date').value,blurLabel:$('photo-blur').value||null};if(selectionChanged)fields.selected=$('photo-selected').checked;if(fields.date&&!validDate(fields.date))return toast('日付を正しく指定してください。',true);if(peopleChanged)fields.manualPeople=[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value);if(gameChanged)fields.jerseyGameId=$('photo-jersey-game').value;const result=await perform(()=>api('/api/photo',fields));if(result)closeDialog();};
   $('face-answer-list').onclick=async event=>{
     const button=event.target.closest('[data-decision]');if(!button||busy())return;
@@ -580,7 +606,7 @@ async function openEnrollment(id){
   try{
     if(!(photo.faceAnalyzed??photo.analyzed)){
       pending++;updateControls();
-      try{await api('/api/analyze',{ids:[id]});await waitJob();photo=getPhoto(id);}
+      try{await api('/api/analyze',{ids:[id],recognizeJerseys:false});await waitJob();photo=getPhoto(id);}
       finally{pending--;updateControls();}
     }
     const image=await loadImage(id);if(editorPhotoId!==id||!$('face-editor-dialog').open)return;
@@ -625,7 +651,7 @@ function showExportResult(result={}){
 }
 
 function help(){
-  showDialog(`<div class="dialog-body"><h2>写真を選び、その場で判定を直す。</h2><ol class="help-list"><li><strong>写真フォルダを開く</strong>。このPCの写真を読み込みます。</li><li>写真を開き、<strong>顔を選んで人物を登録</strong>。未解析の写真は<strong>この写真を解析</strong>で顔を探せます。顔が見つからなければ四角で囲んで指定します。</li><li><strong>写真を解析</strong>でまとめて人物を分類します。写真を開き、顔ごとの<strong>OK・本人／NG・別人</strong>で修正します。正しい名前を選んでOKにすると、その人へ訂正できます。</li><li>必要に応じて日付・イベント・容量を設定し、<strong>フォルダへ出力</strong>します。集合写真は各人のフォルダにコピーします。</li></ol><p><strong>プロジェクトを保存</strong>で名前を付けて保存します。<strong>新規プロジェクト</strong>は今の作業を保存し、人物登録とOK／NGを引き継ぎます。写真一覧とイベントは空で始めます。保存済みの作業は<strong>プロジェクトを開く</strong>の選択欄から戻せます。</p><p>人物登録・OK／NG・イベントはPCへ自動保存も行い、次回も復元します。初回の接続登録後は、WindowsへサインインしてPagesを開くだけで使えます。写真と顔の解析結果を外部サービスへ送信しません。</p><p>GPUが利用できない場合は画面に理由を表示します。認識のための機械学習処理はPC内のプログラムで行います。</p><p class="status-details">${esc(data.engine.gpuName||'')}<br>${esc(data.engine.provider||'')}<br>${esc(data.engine.engineId||'')}</p></div>${dialogActions('')}`);
+  showDialog(`<div class="dialog-body"><h2>フォルダから解析まで、順番に。</h2><ol class="help-list"><li><strong>フォルダを読み込む</strong>。このPCの写真だけを処理します。</li><li><strong>試合を登録</strong>。撮影日時から自動作成するか、手動で写真の範囲を設定します。読み込み時の自動登録が済んでいれば、その試合を使えます。</li><li><strong>チームと味方のユニフォームを選択</strong>。保存したチーム名簿と4種類の見本を呼び出せます。未登録なら名簿や味方の見本を追加します。</li><li><strong>相手のユニフォームを登録</strong>。この試合の相手のシャツ部分を四角で囲みます。</li><li><strong>写真を解析</strong>。読み込んだ全写真の顔を先に解析し、背番号認識がオンなら設定済みの試合の写真を続けて確認します。一覧の絞り込みに関係なく、全写真が顔認識の対象です。</li></ol><p>背番号認識は初期状態でオンです。試合がない場合は顔認識を完了し、試合登録が必要なことを表示します。通常の写真整理はチェックを外すと顔認識だけで進められます。オフにしても保存済みの背番号結果やOK／NGは保持します。</p><p>顔の初回登録は「人物の顔を登録・管理」から行えます。写真を開き、顔や番号の結果をOK／NGで直します。登録・訂正・プロジェクトはPCへ保存されます。</p><p>必要に応じて日付・イベント・容量を設定し、フォルダへ出力してください。写真は外部サービスへ送りません。</p></div>${dialogActions('')}`);
 }
 
 for(const id of ['choose-source','empty-import'])$(id).onclick=()=>void pickSource();
@@ -633,7 +659,8 @@ $('enter-source').onclick=()=>enterSource();$('add-person').onclick=addPerson;$(
 $('choose-face-photo').onclick=()=>{uniformEnroll=null;$('uniform-notice').hidden=true;enrollMode=true;filter='all';page=0;$('person-filter').value='';$('date-filter').value='';document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));renderGallery();$('gallery').scrollIntoView({behavior:'smooth',block:'start'});};
 $('cancel-enroll').onclick=()=>{enrollMode=false;renderGallery();};
 $('people-list').onclick=event=>{const person=event.target.closest('[data-person]');if(person){currentPerson=person.dataset.person;renderPeople();}};
-$('scan-button').onclick=()=>void perform(()=>api('/api/analyze',{}),{message:null});
+$('scan-button').onclick=()=>void perform(()=>api('/api/analyze',{recognizeJerseys:$('recognize-jerseys').checked}),{message:null});
+$('recognize-jerseys').onchange=event=>{const recognizeJerseys=event.target.checked;renderWorkflow();void perform(()=>api('/api/settings',{recognizeJerseys}),{message:null});};
 $('event-list').onclick=event=>{const button=event.target.closest('[data-event]');if(button&&!busy())editEvent(data.events.find(item=>item.id===button.dataset.event));};
 $('day-list').onclick=event=>{const add=event.target.closest('[data-day-event]');if(add&&!busy()){const day=add.dataset.dayEvent;return editEvent(data.events.find(item=>day>=item.start&&day<=item.end),day);}const day=event.target.closest('[data-day]');if(day){$('date-filter').value=day.dataset.day;page=0;renderGallery();}};
 $('gallery').onclick=event=>{const button=event.target.closest('[data-photo]');if(button)void openPhoto(button.dataset.photo);};
