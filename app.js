@@ -1,10 +1,11 @@
-import {mountFaceEditor} from './face-editor.js?v=2.5.0';
+import {mountFaceEditor} from './face-editor.js?v=2.6.0';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.round(Number(bytes||0)/1000)} KB`;
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
-const UI_VERSION='2.5.0';
+const UI_VERSION='2.6.0';
+const DEFAULT_TEAM_ID='team-default';
 const PUBLIC_VERSION_URL='https://murajun620-crypto.github.io/photo_sorter_web/version.json';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
 const CONNECTION_KEY='photosorter-pc-session-v1';
@@ -12,21 +13,23 @@ const credentials=JSON.parse(localStorage.getItem(CONNECTION_KEY)||sessionStorag
 let accessToken=credentials.accessToken||'',bootstrapToken=credentials.bootstrapToken||'',authenticated=false,autoConnect=false,connecting=false;
 const PLACEHOLDER='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120"><rect width="100%" height="100%" fill="#e9ece5"/></svg>');
 const imageCache=new Map(),imageQueue=[],imagePending=new Set();let imageActive=0;
+let imageController=new AbortController(),imagesPaused=false;
 function saveCredentials(){localStorage.setItem(CONNECTION_KEY,JSON.stringify({accessToken,bootstrapToken}));sessionStorage.setItem(CONNECTION_KEY,JSON.stringify({accessToken,bootstrapToken}));}
 function apiURL(path){if(!path.startsWith('/api/'))throw Error('接続先の指定が不正です。');return API_BASE+path;}
 function authHeaders(projectId=data.currentProject?.id){return {...(accessToken?{Authorization:'Bearer '+accessToken}:{}),...(projectId?{'X-PhotoSorter-Project':projectId}:{})};}
 async function privateBlob(kind,id,projectId=data.currentProject?.id){
-  const response=await fetch(apiURL(`/api/${kind}/${encodeURIComponent(id)}`),{headers:authHeaders(projectId),credentials:'omit',cache:'no-store',signal:AbortSignal.timeout(20000)});
+  const response=await fetch(apiURL(`/api/${kind}/${encodeURIComponent(id)}`),{headers:authHeaders(projectId),credentials:'omit',cache:'no-store',signal:AbortSignal.any([AbortSignal.timeout(20000),imageController.signal])});
   if(!response.ok)throw Error('写真を表示できません。PCとの接続と元の写真を確認してください。');return response.blob();
 }
 function media(kind,id){
   const key=(data.currentProject?.id||'')+':'+kind+':'+id;
   if(imageCache.has(key))return imageCache.get(key);
-  if(authenticated&&!imagePending.has(key)){imagePending.add(key);imageQueue.push({key,kind,id,projectId:data.currentProject?.id});queueMicrotask(pumpImages);}
+  if(authenticated&&!imagesPaused&&!imagePending.has(key)){imagePending.add(key);imageQueue.push({key,kind,id,projectId:data.currentProject?.id});queueMicrotask(pumpImages);}
   return PLACEHOLDER;
 }
 function privateImage(kind,id,alt,loading='eager'){return `<img data-private-media="${esc((data.currentProject?.id||'')+':'+kind+':'+id)}" src="${media(kind,id)}" alt="${esc(alt)}" loading="${loading}">`;}
 async function pumpImages(){
+  if(imagesPaused)return;
   while(imageActive<4&&imageQueue.length){
     const item=imageQueue.shift();imageActive++;
     (async()=>{
@@ -84,6 +87,7 @@ async function refresh(){
     data.jerseyGames ||= [];data.jerseyUniforms ||= [];data.jerseyRoster ||= [];
     data.sharedUniforms ||= [];data.jerseyGameKits ||= [];
     data.sharedRoster ||= [];
+    data.sharedTeams ||= [];
     if(previousProject&&previousProject!==data.currentProject?.id)resetProjectView();
     connected=true;$('connection-notice').hidden=true;
     if(!data.people.some(person=>person.id===currentPerson))currentPerson=data.people[0]?.id||'';
@@ -112,8 +116,9 @@ async function waitJob(){
   return data.job?.result||{};
 }
 
-async function perform(action,{message='PCに保存しました。',refreshDetail=false}={}){
+async function perform(action,{message='PCに保存しました。',refreshDetail=false,projectSwitch=false}={}){
   if(busy())return;
+  if(projectSwitch){imagesPaused=true;clearProjectMedia();}
   pending++;updateControls();$('save-status').textContent='PCで処理しています…';
   try{
     const result=await action();
@@ -122,7 +127,7 @@ async function perform(action,{message='PCに保存しました。',refreshDetai
     if(refreshDetail&&activePhotoId&&$('dialog').open)await renderPhotoDetail(activePhotoId);
     return result;
   }catch(error){toast(error.message,true);}
-  finally{pending--;updateControls();if(connected)$('save-status').textContent=data.job.running?'処理中・完了分を保存':'PCに保存済み';}
+  finally{pending--;if(projectSwitch){imagesPaused=false;render();}updateControls();if(connected)$('save-status').textContent=data.job.running?'処理中・完了分を保存':'PCに保存済み';}
 }
 
 function updateControls(){
@@ -140,6 +145,8 @@ function updateControls(){
   $('add-jersey-number').disabled=disabled||!data.people.length;
   $('add-game-number').disabled=disabled||!activeGame||!data.people.length;
   $('use-common-roster').disabled=disabled||!activeGame;
+  for(const id of ['roster-team','add-roster-team','rename-roster-team'])$(id).disabled=disabled;
+  $('game-roster-team').disabled=disabled||!activeGame;
   $('read-jerseys').disabled=disabled||!data.engine.jersey?.ready||!filtered().some(p=>p.jerseyGameId);
   document.querySelectorAll('#photo-form input,#photo-form select,#event-form input,#person-form input,#path-form input').forEach(node=>node.disabled=disabled);
   document.querySelectorAll('[data-close]').forEach(node=>node.disabled=pending>0);
@@ -175,6 +182,10 @@ function renderPeople(){
 
 function renderJerseys(){
   const games=data.jerseyGames||[];
+  const teams=data.sharedTeams||[],teamId=data.settings.rosterTeamId||DEFAULT_TEAM_ID,team=teams.find(t=>t.id===teamId);
+  const teamOptions=teams.map(t=>`<option value="${esc(t.id)}">${esc(t.name)}（${t.memberCount}人）</option>`).join('');
+  $('roster-team').innerHTML=teamOptions;$('roster-team').value=teamId;
+  $('roster-team-status').textContent=`${team?.name||'選んだチーム'}の背番号と人物をPCへ自動保存します。別試合・別プロジェクトでも、このチームを選ぶだけで呼び出せます。ここで選んだチームを新しい試合の初期設定に使います。`;
   const types=data.sharedUniforms||[];
   if(!types.some(type=>type.id===sharedKit))sharedKit=types[0]?.id||'';
   $('shared-kit-select').innerHTML=types.map(type=>`<option value="${esc(type.id)}">${esc(type.name)}（見本${type.sampleCount}件）</option>`).join('');$('shared-kit-select').value=sharedKit;
@@ -184,16 +195,19 @@ function renderJerseys(){
   $('jersey-game').innerHTML=games.length?games.map(game=>`<option value="${esc(game.id)}">${esc(game.name)}${game.inferred?'（仮）':''}</option>`).join(''):'<option value="">先に試合を追加</option>';
   $('jersey-game').value=activeGame;
   const currentGame=games.find(game=>game.id===activeGame);$('game-time-summary').textContent=currentGame?.startAt?`${currentGame.inferred?'仮登録：':''}${currentGame.startAt.replace('T',' ').slice(0,19)}〜${currentGame.endAt?.replace('T',' ').slice(0,19)||''} · ${data.photos.filter(p=>p.jerseyGameId===activeGame).length}枚`:'';
+  const gameTeamId=currentGame?.teamId||DEFAULT_TEAM_ID;
+  $('game-roster-team').innerHTML=teamOptions;$('game-roster-team').value=gameTeamId;
+  $('game-roster-status').textContent=currentGame?`${teams.find(t=>t.id===gameTeamId)?.name||'チーム不明'}の番号表を使います。味方・相手の見本、番号変更、OK／NGもこの試合・チームごとに切り替わります。`:'試合を追加すると、保存したチーム名簿を選べます。';
   $('use-common-roster').checked=currentGame?.useCommonRoster!==false;
   const mode=data.settings.gameRegistration||'auto';$('game-registration').value=mode;
   $('game-registration-hint').textContent=mode==='auto'?`撮影が${data.settings.inferGapMinutes||30}分以上空いた所で試合を仮登録します。後から名前・写真の範囲を編集できます。`:mode==='manual'?'読み込みでは試合を作りません。「＋ 試合」で登録し、写真の範囲を指定してください。':'読み込みでは試合を作りません。顔・日付・イベントで整理できます。既存の試合と割り当ては残します。';
-  const common=data.sharedRoster||[],duplicates=new Set(common.filter(row=>common.filter(other=>other.number===row.number).length>1).map(row=>row.number));
+  const common=(data.sharedRoster||[]).filter(row=>row.teamId===teamId),duplicates=new Set(common.filter(row=>common.filter(other=>other.number===row.number).length>1).map(row=>row.number));
   $('shared-roster').innerHTML=common.map(row=>`<div><span>#${esc(row.number)} → ${esc(row.personName)}${!row.available?'<small>このプロジェクトに人物登録なし</small>':duplicates.has(row.number)?'<small>同じ番号が複数名：要確認</small>':''}</span><button class="tiny-button" data-edit-common="${esc(row.id)}" data-mutates>編集</button><button class="tiny-button" data-remove-common="${esc(row.id)}" data-mutates>削除</button></div>`).join('')||'<p class="hint">一度登録すると次の試合でも使えます。</p>';
   const previous=$('game-filter').value;
   $('game-filter').innerHTML='<option value="">すべての試合</option><option value="__unassigned__">試合未設定</option>'+games.map(game=>`<option value="${esc(game.id)}">${esc(game.name)}</option>`).join('');
   $('game-filter').value=previous==='__unassigned__'||games.some(game=>game.id===previous)?previous:'';
-  const samples=(data.jerseyUniforms||[]).filter(s=>s.gameId===activeGame),roster=(data.jerseyRoster||[]).filter(row=>row.gameId===activeGame);
-  const selectedKits=(data.jerseyGameKits||[]).filter(item=>item.gameId===activeGame).map(item=>item.kitId);
+  const samples=(data.jerseyUniforms||[]).filter(s=>s.gameId===activeGame&&s.teamId===gameTeamId),roster=(data.jerseyRoster||[]).filter(row=>row.gameId===activeGame&&row.teamId===gameTeamId);
+  const selectedKits=(data.jerseyGameKits||[]).filter(item=>item.gameId===activeGame&&item.teamId===gameTeamId).map(item=>item.kitId);
   $('game-kit-options').innerHTML=types.map(type=>`<label><input type="checkbox" value="${esc(type.id)}" ${selectedKits.includes(type.id)?'checked':''} data-mutates>${esc(type.name)}（${type.sampleCount?'見本あり':'未登録'}）</label>`).join('');
   $('jersey-samples').innerHTML=samples.map((sample,index)=>`<div><span>${sample.side==='own'?'この試合の味方':'相手'}の見本 ${index+1}</span>${sample.side==='own'?`<button class="tiny-button" data-promote-sample="${esc(sample.id)}" data-mutates>共通へ</button>`:''}<button class="tiny-button" data-remove-sample="${esc(sample.id)}" data-mutates>削除</button></div>`).join('');
   $('jersey-roster').innerHTML=roster.map(row=>`<div><span>#${esc(row.number)} → ${esc(getPerson(row.personId)?.name||'人物不明')}</span><button class="tiny-button" data-edit-number="${esc(row.id)}" data-mutates>編集</button><button class="tiny-button" data-remove-number="${esc(row.id)}" data-mutates>削除</button></div>`).join('')||'<p class="hint">試合だけの変更はありません。</p>';
@@ -213,7 +227,7 @@ function editJerseyGame(existing=null){
   }
   $('jersey-game-form').onsubmit=async event=>{event.preventDefault();const name=$('jersey-game-name').value.trim(),body={name,...(existing?{id:existing.id}:{})};if($('edit-game-range')?.checked){const start=Number($('edit-game-start').value),end=Number($('edit-game-end').value);if(start>end)return toast('開始と終了の順番を確認してください。',true);body.photoIds=photos.slice(start,end+1).map(p=>p.id);}const result=await perform(()=>api('/api/jersey/games',body),{message:'試合を保存しました。'});if(result){activeGame=result.game.id;closeDialog();renderJerseys();updateControls();}};
   if(existing)$('delete-jersey-game').onclick=()=>{
-    showDialog(`<div class="dialog-body"><h2>「${esc(existing.name)}」を削除しますか？</h2><p>${members.length}枚の試合割り当てを解除し、この試合だけの見本・番号表・背番号OK／NGを削除します。写真本体・顔の登録・PC共通の番号表と4種類は残ります。</p></div>${dialogActions('<button type="button" id="confirm-delete-game" class="primary-button" data-mutates>この試合を削除する</button>')}`);
+    showDialog(`<div class="dialog-body"><h2>「${esc(existing.name)}」を削除しますか？</h2><p>${members.length}枚の試合割り当てを解除し、この試合だけの見本・番号表・背番号OK／NGを削除します。写真本体・顔の登録・PC保存のチーム名簿と4種類は残ります。</p></div>${dialogActions('<button type="button" id="confirm-delete-game" class="primary-button" data-mutates>この試合を削除する</button>')}`);
     $('confirm-delete-game').onclick=async()=>{const result=await perform(()=>api('/api/jersey/games',{id:existing.id,delete:true}),{message:'試合を削除しました。写真の割り当ては解除済みです。'});if(result)closeDialog();};
   };
 }
@@ -232,14 +246,20 @@ function assignJerseyRange(){
 }
 
 function addJerseyNumber(scope='common',existing=null){
-  if(busy()||scope==='game'&&!activeGame)return;const gameId=activeGame;
-  showDialog(`<form id="jersey-number-form"><div class="dialog-body"><h2>${existing?'背番号の登録を編集':'背番号と人物を登録'}</h2><p>${scope==='common'?'PC共通の番号表へ保存します。新しい試合・プロジェクトでも使います。':esc(data.jerseyGames.find(g=>g.id===gameId)?.name)+' だけの変更です。共通の番号表は変えません。'}</p><label class="dialog-field">背番号<input id="jersey-number" inputmode="numeric" pattern="[0-9]{1,3}" maxlength="3" required value="${esc(existing?.number||'')}"></label><label class="dialog-field">人物<select id="jersey-person" required>${existing&&!getPerson(existing.personId)?'<option value="" selected disabled>このプロジェクトの人物を選択</option>':''}${data.people.map(p=>`<option value="${esc(p.id)}" ${p.id===existing?.personId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><p class="hint">番号と味方ユニフォームの両方で確認します。同じ番号に複数人が登録されている場合は自動確定しません。試合だけの番号変更があれば、その番号と人物は試合の設定を優先します。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>番号表に保存</button>')}</form>`);
-  $('jersey-number-form').onsubmit=async event=>{event.preventDefault();const number=$('jersey-number').value,personId=$('jersey-person').value;const result=await perform(()=>api(scope==='common'?'/api/roster':'/api/jersey/roster',{gameId,number,personId,...(existing?{id:existing.id}:{})}),{message:scope==='common'?'PC共通の番号表を保存しました。':'この試合だけの番号変更を保存しました。'});if(result)closeDialog();};
+  if(busy()||scope==='game'&&!activeGame)return;const gameId=activeGame,teamId=scope==='common'?(data.settings.rosterTeamId||DEFAULT_TEAM_ID):data.jerseyGames.find(g=>g.id===gameId)?.teamId;
+  showDialog(`<form id="jersey-number-form"><div class="dialog-body"><h2>${existing?'背番号の登録を編集':'背番号と人物を登録'}</h2><p>${scope==='common'?'選んだチームの名簿をPCへ保存します。新しい試合・プロジェクトでも使います。':esc(data.jerseyGames.find(g=>g.id===gameId)?.name)+' だけの変更です。保存したチーム名簿は変えません。'}</p>${scope==='common'?`<label class="dialog-field">保存するチーム<select id="roster-entry-team">${data.sharedTeams.map(t=>`<option value="${esc(t.id)}" ${t.id===(existing?.teamId||teamId)?'selected':''}>${esc(t.name)}</option>`).join('')}</select></label>`:''}<label class="dialog-field">背番号<input id="jersey-number" inputmode="numeric" pattern="[0-9]{1,3}" maxlength="3" required value="${esc(existing?.number||'')}"></label><label class="dialog-field">人物<select id="jersey-person" required>${existing&&!getPerson(existing.personId)?'<option value="" selected disabled>このプロジェクトの人物を選択</option>':''}${data.people.map(p=>`<option value="${esc(p.id)}" ${p.id===existing?.personId?'selected':''}>${esc(p.name)}</option>`).join('')}</select></label><p class="hint">番号と味方ユニフォームの両方で確認します。同じチーム内の同じ番号に複数人がいる場合は自動確定しません。別チームの同じ番号とは混ざりません。</p></div>${dialogActions('<button type="submit" class="primary-button" data-mutates>番号表に保存</button>')}</form>`);
+  $('jersey-number-form').onsubmit=async event=>{event.preventDefault();const number=$('jersey-number').value,personId=$('jersey-person').value,targetTeam=scope==='common'?$('roster-entry-team').value:teamId;const result=await perform(()=>api(scope==='common'?'/api/roster':'/api/jersey/roster',{gameId,number,personId,teamId:targetTeam,...(existing?{id:existing.id,sourceTeamId:existing.teamId}:{})}),{message:scope==='common'?'チームの名簿をPCに保存しました。':'この試合・チームだけの番号変更を保存しました。'});if(result)closeDialog();};
+}
+
+function editRosterTeam(existing=null){
+  if(busy())return;const selected=data.settings.rosterTeamId||DEFAULT_TEAM_ID;
+  showDialog(`<form id="roster-team-form"><div class="dialog-body"><h2>${existing?'チーム名を変更':'チームをPCに保存'}</h2><p>チームごとに背番号と人物を登録して呼び出せます。学年・年度で分けることもできます。</p><label class="dialog-field">チーム名<input id="roster-team-name" maxlength="60" required value="${esc(existing?.name||'')}" placeholder="例：○○FC U-10、学校のチーム"></label>${existing?'':'<label class="check-line"><input id="copy-team-roster" type="checkbox">今表示しているチームの名簿をコピーする</label>'}</div>${dialogActions('<button type="submit" class="primary-button" data-mutates>PCに保存</button>')}</form>`);
+  $('roster-team-form').onsubmit=async event=>{event.preventDefault();const name=$('roster-team-name').value,body={name,...(existing?{id:existing.id}:$('copy-team-roster').checked?{copyFrom:selected}:{})};const result=await perform(()=>api('/api/teams',body),{message:'チームをPCに保存しました。'});if(result)closeDialog();};
 }
 
 function chooseUniform(side){
   if(busy()||side==='own'&&!sharedKit||side==='opponent'&&!activeGame)return;
-  uniformEnroll=side==='own'?{kitId:sharedKit,side}:{gameId:activeGame,side};enrollMode=false;filter='all';page=0;$('person-filter').value='';$('game-filter').value='';
+  uniformEnroll=side==='own'?{kitId:sharedKit,side}:{gameId:activeGame,teamId:data.jerseyGames.find(g=>g.id===activeGame)?.teamId,side};enrollMode=false;filter='all';page=0;$('person-filter').value='';$('game-filter').value='';
   document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));
   $('uniform-notice-text').textContent=`${side==='own'?(data.sharedUniforms.find(k=>k.id===sharedKit)?.name+'（PC共通）'):data.jerseyGames.find(g=>g.id===activeGame)?.name}：${side==='own'?'味方':'相手'}のユニフォームが写った写真をクリックしてください。`;
   $('uniform-notice').hidden=false;renderGallery();$('uniform-notice').scrollIntoView({behavior:'smooth',block:'center'});
@@ -260,7 +280,7 @@ async function openUniformEditor(photoId,choice){
     canvas.onpointermove=event=>{if(!start)return;const end=point(event);region={x:Math.min(start.x,end.x),y:Math.min(start.y,end.y),width:Math.abs(end.x-start.x),height:Math.abs(end.y-start.y)};paint();};
     canvas.onpointerup=event=>{if(!start)return;canvas.onpointermove(event);start=null;$('uniform-region-status').textContent='囲んだシャツが正しければ見本を保存してください。';};
     canvas.onpointercancel=()=>{start=null;};paint();$('uniform-region-status').textContent='シャツの生地・模様をドラッグで囲んでください。';
-    $('uniform-form').onsubmit=async event=>{event.preventDefault();if(!region||region.width<16||region.height<16)return toast('ユニフォームを少し広く囲んでください。',true);const result=await perform(()=>api(choice.kitId?'/api/uniforms/sample':'/api/jersey/sample',{photoId,gameId:choice.gameId,kitId:choice.kitId,side:choice.side,region}),{message:null});if(result)closeDialog();};
+    $('uniform-form').onsubmit=async event=>{event.preventDefault();if(!region||region.width<16||region.height<16)return toast('ユニフォームを少し広く囲んでください。',true);const result=await perform(()=>api(choice.kitId?'/api/uniforms/sample':'/api/jersey/sample',{photoId,gameId:choice.gameId,teamId:choice.teamId,kitId:choice.kitId,side:choice.side,region}),{message:null});if(result)closeDialog();};
   }catch(error){if($('uniform-region-status'))$('uniform-region-status').textContent=error.message;}
 }
 
@@ -272,8 +292,11 @@ $('own-uniform').onclick=()=>chooseUniform('own');$('opponent-uniform').onclick=
 $('cancel-uniform').onclick=()=>{uniformEnroll=null;$('uniform-notice').hidden=true;};
 $('read-jerseys').onclick=()=>void perform(()=>api('/api/jersey/analyze',{ids:filtered().map(photo=>photo.id)}),{message:null});
 $('jersey-samples').onclick=event=>{const promoted=event.target.closest('[data-promote-sample]')?.dataset.promoteSample;if(promoted)return promoteUniform(promoted);const id=event.target.closest('[data-remove-sample]')?.dataset.removeSample;if(id)void perform(()=>api('/api/jersey/sample-delete',{id}),{message:'見本を削除しました。'});};
-$('jersey-roster').onclick=event=>{const edit=event.target.closest('[data-edit-number]')?.dataset.editNumber;if(edit)return addJerseyNumber('game',data.jerseyRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-number]')?.dataset.removeNumber;if(id)void perform(()=>api('/api/jersey/roster',{id,delete:true}),{message:'この試合の番号変更を削除しました。共通の番号表を再び使います。'});};
-$('shared-roster').onclick=event=>{const edit=event.target.closest('[data-edit-common]')?.dataset.editCommon;if(edit)return addJerseyNumber('common',data.sharedRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-common]')?.dataset.removeCommon;if(id)void perform(()=>api('/api/roster',{id,delete:true}),{message:'共通の番号登録を削除しました。試合だけの設定は残ります。'});};
+$('jersey-roster').onclick=event=>{const edit=event.target.closest('[data-edit-number]')?.dataset.editNumber;if(edit)return addJerseyNumber('game',data.jerseyRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-number]')?.dataset.removeNumber;if(id)void perform(()=>api('/api/jersey/roster',{id,delete:true}),{message:'この試合の番号変更を削除しました。選んだチームの名簿を再び使います。'});};
+$('shared-roster').onclick=event=>{const edit=event.target.closest('[data-edit-common]')?.dataset.editCommon;if(edit)return addJerseyNumber('common',data.sharedRoster.find(row=>row.id===edit));const id=event.target.closest('[data-remove-common]')?.dataset.removeCommon;if(id){const teamId=data.sharedRoster.find(row=>row.id===id)?.teamId;void perform(()=>api('/api/roster',{id,teamId,delete:true}),{message:'このチームの番号登録を削除しました。試合だけの設定は残ります。'});}};
+$('add-roster-team').onclick=()=>editRosterTeam();$('rename-roster-team').onclick=()=>editRosterTeam(data.sharedTeams.find(t=>t.id===$('roster-team').value));
+$('roster-team').onchange=event=>{const teamId=event.target.value;void perform(()=>api('/api/teams/select',{teamId}),{message:'PCからチーム名簿を呼び出しました。新しい試合でも使います。'});};
+$('game-roster-team').onchange=event=>{const teamId=event.target.value;void perform(()=>api('/api/jersey/team',{gameId:activeGame,teamId}),{message:'この試合で使うチーム名簿を切り替えました。'});};
 $('use-common-roster').onchange=()=>void perform(()=>api('/api/jersey/use-common-roster',{gameId:activeGame,enabled:$('use-common-roster').checked}),{message:'この試合で使う番号表を保存しました。'});
 $('shared-kit-select').onchange=event=>{sharedKit=event.target.value;renderJerseys();updateControls();};
 $('rename-shared-kit').onclick=()=>{
@@ -294,7 +317,7 @@ function inferGamesDialog(){
   $('infer-games-form').onsubmit=async event=>{event.preventDefault();const gapMinutes=Number($('infer-gap').value),includeFileTimes=$('infer-file-times').checked,resetAuto=$('infer-reset').checked;closeDialog();await perform(async()=>{await api('/api/settings',{inferGapMinutes:gapMinutes,inferIncludeFileTimes:includeFileTimes});return api('/api/jersey/infer',{gapMinutes,includeFileTimes,resetAuto});},{message:null});};
 }
 function showInferredGames(result={}){
-  showDialog(`<div class="dialog-body"><h2>試合の仮登録ができました</h2><p>${esc(result.message||'')}</p><div class="inferred-games">${(result.createdGames||[]).map(game=>`<div><strong>${esc(game.name)}</strong><br>${esc(game.startAt?.replace('T',' ').slice(0,19))}〜${esc(game.endAt?.replace('T',' ').slice(0,19))}<br>${Number(game.photoCount)}枚</div>`).join('')}</div><p>仮の試合名は変更できます。各試合で実際に使った味方の種類と、相手の見本・番号表を設定してください。</p></div>${dialogActions('')}`);
+  showDialog(`<div class="dialog-body"><h2>試合の仮登録ができました</h2><p>${esc(result.message||'')}</p><div class="inferred-games">${(result.createdGames||[]).map(game=>`<div><strong>${esc(game.name)}</strong><br>${esc(game.startAt?.replace('T',' ').slice(0,19))}〜${esc(game.endAt?.replace('T',' ').slice(0,19))}<br>${Number(game.photoCount)}枚</div>`).join('')}</div><p>仮の試合名は変更できます。各試合で実際に使った味方の種類と、相手の見本と使用するチーム名簿を設定してください。</p></div>${dialogActions('')}`);
 }
 $('game-registration').onchange=()=>void perform(()=>api('/api/settings',{gameRegistration:$('game-registration').value}),{message:'今後の写真読み込みでの試合登録方法を保存しました。'});
 $('infer-jersey-games').onclick=inferGamesDialog;
@@ -378,6 +401,10 @@ async function checkForUpdate(){
 }
 $('check-update').onclick=()=>void checkForUpdate();
 
+function clearProjectMedia(){
+  imageController.abort();imageController=new AbortController();imageQueue.length=0;imagePending.clear();
+  for(const url of imageCache.values())URL.revokeObjectURL(url);imageCache.clear();
+}
 function resetProjectView(){
   activeGame='';uniformEnroll=null;$('game-filter').value='';$('uniform-notice').hidden=true;
   currentPerson='';filter='all';page=0;enrollMode=false;settingsInitialized=false;detailGeneration++;
@@ -386,7 +413,7 @@ function resetProjectView(){
   $('dialog').close();$('dialog-content').replaceChildren();$('face-editor-dialog').close();$('face-editor-content').replaceChildren();
   $('person-filter').value='';$('date-filter').value='';
   document.querySelectorAll('[data-filter]').forEach(button=>button.classList.toggle('active',button.dataset.filter==='all'));
-  for(const url of imageCache.values())URL.revokeObjectURL(url);imageCache.clear();imageQueue.length=0;
+  clearProjectMedia();
 }
 function renderProjects(){
   const project=data.currentProject;
@@ -398,14 +425,14 @@ function renderProjects(){
 function projectDialog(kind){
   if(busy())return;
   const fresh=kind==='new';
-  showDialog(`<form id="project-form"><div class="dialog-body"><h2>${fresh?'新規プロジェクト':'プロジェクトを保存'}</h2><p>${fresh?'現在の作業を保存し、人物登録・登録した顔・OK／NGを引き継ぎます。PC共通の番号表とユニフォーム4種類も使えます。写真一覧・イベント・試合は空で始めます。':'写真一覧・人物登録・OK／NG・イベント・設定をPC内のプロジェクトとして保存します。'}</p><label class="dialog-field">プロジェクト名<input id="project-title" required maxlength="100" value="${esc(fresh?'新しいプロジェクト':data.currentProject?.name||'写真整理')}"></label>${fresh?registrationSelect('project-registration'):''}</div>${dialogActions(`<button type="submit" class="primary-button" data-mutates>${fresh?'作成する':'保存する'}</button>`)}</form>`);
+  showDialog(`<form id="project-form"><div class="dialog-body"><h2>${fresh?'新規プロジェクト':'プロジェクトを保存'}</h2><p>${fresh?'現在の作業を保存し、人物登録・登録した顔・OK／NGを引き継ぎます。PC保存のチーム名簿とユニフォーム4種類も使えます。写真一覧・イベント・試合は空で始めます。':'写真一覧・人物登録・OK／NG・イベント・設定をPC内のプロジェクトとして保存します。'}</p><label class="dialog-field">プロジェクト名<input id="project-title" required maxlength="100" value="${esc(fresh?'新しいプロジェクト':data.currentProject?.name||'写真整理')}"></label>${fresh?registrationSelect('project-registration'):''}</div>${dialogActions(`<button type="submit" class="primary-button" data-mutates>${fresh?'作成する':'保存する'}</button>`)}</form>`);
   $('project-form').onsubmit=event=>{
     event.preventDefault();const name=$('project-title').value.trim();if(!name)return;
-    const gameRegistration=fresh?$('project-registration').value:undefined;closeDialog();void perform(()=>api(fresh?'/api/projects/new':'/api/projects/save',{name,...(fresh?{gameRegistration}:{})}),{message:fresh?'新規プロジェクトを作成しました。':'プロジェクトを保存しました。'});
+    const gameRegistration=fresh?$('project-registration').value:undefined;closeDialog();void perform(()=>api(fresh?'/api/projects/new':'/api/projects/save',{name,...(fresh?{gameRegistration}:{})}),{message:fresh?'新規プロジェクトを作成しました。':'プロジェクトを保存しました。',projectSwitch:fresh});
   };$('project-title').select();
 }
 $('save-project').onclick=()=>projectDialog('save');$('new-project').onclick=()=>projectDialog('new');
-$('open-project').onchange=event=>{const id=event.target.value;if(id&&id!==data.currentProject?.id)void perform(()=>api('/api/projects/open',{id}),{message:'プロジェクトを開きました。'});};
+$('open-project').onchange=event=>{const id=event.target.value;if(id&&id!==data.currentProject?.id)void perform(()=>api('/api/projects/open',{id}),{message:'プロジェクトを開きました。',projectSwitch:true});};
 
 async function pickSource(){if(!busy())await openFolder('source');}
 
@@ -503,7 +530,7 @@ async function renderPhotoDetail(id){
     if(gameChanged)return toast('先に写真の試合設定を保存してください。',true);
     const row=button.closest('[data-jersey-observation]'),decision=button.dataset.jerseyDecision,personId=row.querySelector('select').value;
     if(decision==='ok'&&!personId)return toast('この選手の人物を選んでください。',true);
-    const result=await perform(async()=>{if(peopleChanged||selectionChanged){await api('/api/photo',{id,...(peopleChanged?{manualPeople:[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value)}:{}),...(selectionChanged?{selected:$('photo-selected').checked}:{})});peopleChanged=false;selectionChanged=false;}return api('/api/jersey/feedback',{photoId:id,observationId:row.dataset.jerseyObservation,gameId:getPhoto(id)?.jerseyGameId,personId,decision});},{message:'背番号の確認を保存しました。'});
+    const result=await perform(async()=>{if(peopleChanged||selectionChanged){await api('/api/photo',{id,...(peopleChanged?{manualPeople:[...$('photo-form').querySelectorAll('[name=photo-person]:checked')].map(node=>node.value)}:{}),...(selectionChanged?{selected:$('photo-selected').checked}:{})});peopleChanged=false;selectionChanged=false;}return api('/api/jersey/feedback',{photoId:id,observationId:row.dataset.jerseyObservation,gameId:photo.jerseyGameId,teamId:photo.jerseyTeamId,personId,decision});},{message:'背番号の確認を保存しました。'});
     if(result&&activePhotoId===id&&$('dialog').open){const live=getPhoto(id);paintJerseyAnswers(live);$('photo-selected').checked=live.selected;$('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.checked=live.matchedIds?.includes(node.value));updateControls();}
   };
   $('photo-form').querySelectorAll('[name=photo-person]').forEach(node=>node.onchange=()=>peopleChanged=true);
