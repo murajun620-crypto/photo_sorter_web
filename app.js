@@ -1,10 +1,10 @@
-import {mountFaceEditor} from './face-editor.js?v=2.7.0';
+import {mountFaceEditor} from './face-editor.js?v=2.8.0';
 
 const $=id=>document.getElementById(id);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const size=bytes=>Number(bytes)>=1e6?`${(bytes/1e6).toFixed(1)} MB`:`${Math.round(Number(bytes||0)/1000)} KB`;
 const HOSTED=location.origin==='https://murajun620-crypto.github.io';
-const UI_VERSION='2.7.0';
+const UI_VERSION='2.8.0';
 const DEFAULT_TEAM_ID='team-default';
 const PUBLIC_VERSION_URL='https://murajun620-crypto.github.io/photo_sorter_web/version.json';
 const API_BASE=HOSTED?'http://127.0.0.1:8765':location.origin;
@@ -158,7 +158,7 @@ function updateControls(){
   $('cancel-job').disabled=!data.job.running;
   const job=data.job||{};$('progress-dock').hidden=!job.running;
   if(job.running){
-    const titles={folder:'Windowsのフォルダ選択を待っています',register:'人物と顔をPCに登録しています',initialize:'GPUを準備しています',import:'写真を読み込んでいます',times:'撮影日時を読み込んでいます',infer:'日時から試合を推定しています',analyze:'GPUで写真を解析しています',jersey:'GPUで背番号とチームを確認しています',uniform:'ユニフォームの見本を保存しています',export:'写真を出力しています'};
+    const titles={folder:'Windowsでフォルダーを選択しています',register:'人物と顔をPCに登録しています',initialize:'GPUを準備しています',import:'写真を読み込んでいます',times:'撮影日時を読み込んでいます',infer:'日時から試合を推定しています',analyze:'GPUで写真を解析しています',jersey:'GPUで背番号とチームを確認しています',uniform:'ユニフォームの見本を保存しています',export:'写真を出力しています'};
     $('progress-title').textContent=titles[job.type]||'PCで処理しています';$('progress-detail').textContent=job.message||'';
     if(job.type==='analyze')$('progress-title').textContent=job.phase==='jerseys'?'2/2 背番号を解析しています':job.recognizeJerseys?'1/2 全写真の顔を解析しています':'顔を解析しています';
     if(job.total>0)$('progress-bar').value=job.done/job.total*100;else $('progress-bar').removeAttribute('value');
@@ -469,34 +469,26 @@ function registrationSelect(id){
 
 async function openFolder(purpose){
   if(busy())return;
-  const output=purpose==='output';let generation=0,selectedPath='';
-  showDialog(`<div class="dialog-body folder-browser"><h2>${output?'出力先フォルダを選ぶ':'写真フォルダを選ぶ'}</h2><p>このPC内のフォルダを開いて選びます。場所を直接入力することもできます。</p>${output?'':registrationSelect('import-game-registration')}<form id="folder-path-form" class="folder-path-row"><input id="folder-browser-path" class="path-input" aria-label="フォルダの場所" autocomplete="off"><button class="outline-button" type="submit">表示</button></form><div id="folder-drives" class="folder-drives"></div><button id="folder-parent" class="text-button" type="button">↑ ひとつ上へ</button><p id="folder-list-status" role="status">フォルダを表示しています…</p><div id="folder-list" class="folder-list"></div></div><div class="dialog-actions"><button class="outline-button" type="button" data-close>閉じる</button><button id="use-folder" class="primary-button" type="button" disabled>${output?'ここへ出力':'このフォルダを読み込む'}</button></div>`);
-  const container=$('folder-list'),pathInput=$('folder-browser-path'),status=$('folder-list-status'),use=$('use-folder');
-  async function load(path){
-    const task=++generation;status.textContent='フォルダを表示しています…';container.replaceChildren();use.disabled=true;
-    try{
-      const result=await api('/api/folders'+(path?'?path='+encodeURIComponent(path):''));
-      if(task!==generation||!container.isConnected)return;
-      selectedPath=result.path;pathInput.value=result.path;use.disabled=false;
-      $('folder-parent').disabled=!result.parent;$('folder-parent').onclick=()=>void load(result.parent);
-      $('folder-drives').innerHTML=result.drives.map(drive=>`<button type="button" class="outline-button" data-folder-path="${esc(drive.path)}">${esc(drive.name)}</button>`).join('');
-      container.innerHTML=result.folders.map(folder=>`<button type="button" class="folder-entry" data-folder-path="${esc(folder.path)}"><span>▱</span> ${esc(folder.name)} <span>›</span></button>`).join('');
-      status.textContent=result.folders.length?`${result.folders.length}個のサブフォルダ。下のボタンで現在のフォルダを選べます。`:'サブフォルダはありません。下のボタンでこのフォルダを選べます。';
-    }catch(error){if(task===generation&&container.isConnected){status.textContent=error.message+' 場所を入力して「表示」を押すか、閉じて別のフォルダを選んでください。';use.disabled=true;}}
-  }
-  function navigate(event){const button=event.target.closest('[data-folder-path]');if(button)void load(button.dataset.folderPath);}
-  $('folder-drives').onclick=navigate;container.onclick=navigate;
-  $('folder-path-form').onsubmit=event=>{event.preventDefault();void load(pathInput.value.trim());};
-  pathInput.oninput=()=>{use.disabled=pathInput.value.trim()!==selectedPath;};
-  use.onclick=()=>{
-    const path=selectedPath,gameRegistration=output?undefined:$('import-game-registration').value;generation++;closeDialog();
-    void perform(async()=>{
-      if(!output)return api('/api/import',{path,gameRegistration});
-      const settings=outputOptions();await api('/api/settings',settings);
-      return api('/api/export',{path,ids:data.photos.filter(photo=>photo.selected&&!photo.error).map(photo=>photo.id),targetBytes:settings.targetBytes,groupMode:settings.exportMode,allowResize:true});
-    },{message:null});
-  };
-  await load();
+  const output=purpose==='output',projectId=data.currentProject?.id;
+  const ids=output?data.photos.filter(photo=>photo.selected&&!photo.error).map(photo=>photo.id):null;
+  const options=output?outputOptions():null,gameRegistration=data.settings.gameRegistration;
+  await perform(async()=>{
+    const started=await api('/api/folder',{purpose}),jobId=started.job.id;
+    while(true){
+      await refreshFresh();
+      if(!connected)throw new Error('PCとの接続を確認してください。Windowsの選択画面はキャンセルできます。');
+      if(data.currentProject?.id!==projectId)throw new Error('プロジェクトが変わりました。フォルダーを選び直してください。');
+      if(data.job.id!==jobId)throw new Error('別の操作に切り替わりました。フォルダーを選び直してください。');
+      if(!data.job.running)break;
+      await new Promise(resolve=>setTimeout(resolve,250));
+    }
+    if(data.job.error)throw new Error(data.job.error);
+    const selected=data.job.result;
+    if(!selected?.path||selected.cancelled){if(!data.job.cancelled)toast('フォルダーの選択をキャンセルしました。');return;}
+    if(!output)return api('/api/import',{path:selected.path,gameRegistration});
+    await api('/api/settings',options);
+    return api('/api/export',{path:selected.path,ids,targetBytes:options.targetBytes,groupMode:options.exportMode,allowResize:true});
+  },{message:null});
 }
 
 function enterSource(purpose='source'){
