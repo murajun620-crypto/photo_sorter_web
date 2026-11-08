@@ -7,14 +7,14 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src blob: data:; connect-src http://127.0.0.1:8765 https://murajun620-crypto.github.io/photo_sorter_web/version.json; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%232b664f'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./style.css?v=2.3.0">
-  <link rel="stylesheet" href="./local.css?v=2.3.0">
-  <script type="module" src="./app.js?v=2.3.0"></script>
+  <link rel="stylesheet" href="./style.css?v=2.4.0">
+  <link rel="stylesheet" href="./local.css?v=2.4.0">
+  <script type="module" src="./app.js?v=2.4.0"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>PC LINK</small></span></a>
-    <span class="version-tools"><span id="app-version" class="app-version">v2.3.0</span><button id="check-update" class="update-check" type="button">更新確認</button></span>
+    <span class="version-tools"><span id="app-version" class="app-version">v2.4.0</span><button id="check-update" class="update-check" type="button">更新確認</button></span>
     <span class="tagline">写真を、渡したい人へ。</span>
     <span id="gpu-status" class="status-pill">GPUを確認中</span>
     <span id="save-status" class="save-status" role="status">PCの保存データに接続中</span>
@@ -35,10 +35,19 @@
       </section>
       <section class="setting-section">
         <div class="section-heading"><span class="step">02</span><h2>背番号と試合</h2><button id="add-jersey-game" class="tiny-button">＋ 試合</button></div>
-        <p class="hint">同じフォルダでも、写真を試合ごとに分けて設定できます。味方・相手のユニフォーム見本と番号表は試合ごとに保存します。</p>
+        <p class="hint">撮影間隔から試合を仮登録できます。手動で直した試合や、見本・番号表のある試合は作り直しません。</p>
+        <button id="infer-jersey-games" class="outline-button wide">日時から試合を自動作成</button>
+        <label class="check-line"><input id="auto-infer-import" type="checkbox" checked>読み込み時にも試合を仮登録する</label>
+        <h3>味方4種類（PC共通）</h3>
+        <label class="jersey-field">見本を登録・管理する種類<select id="shared-kit-select" aria-label="PC共通ユニフォーム"></select></label>
+        <button id="rename-shared-kit" class="tiny-button">種類の名前を変更</button>
+        <div id="shared-kit-samples" class="jersey-list"></div>
         <label class="jersey-field">設定する試合<select id="jersey-game" aria-label="設定する試合"></select></label>
+        <button id="rename-jersey-game" class="tiny-button">試合名を変更</button>
+        <p id="game-time-summary" class="hint"></p>
+        <fieldset id="game-kit-types" class="jersey-kit-types"><legend>この試合で使う味方の種類</legend><div id="game-kit-options"></div></fieldset>
         <button id="assign-jersey-game" class="outline-button wide">写真をこの試合に割り当て</button>
-        <div class="jersey-sample-actions"><button id="own-uniform" class="outline-button">味方の見本を登録</button><button id="opponent-uniform" class="outline-button">相手の見本を登録</button></div>
+        <div class="jersey-sample-actions"><button id="own-uniform" class="outline-button">味方の見本をPCに保存</button><button id="opponent-uniform" class="outline-button">この試合の相手を登録</button></div>
         <div id="jersey-samples" class="jersey-list"></div>
         <div class="section-heading"><h3>背番号 → 人物</h3><button id="add-jersey-number" class="tiny-button">＋ 登録</button></div>
         <div id="jersey-roster" class="jersey-list"></div>
@@ -76,9 +85,10 @@
       <section class="stats"><div><span id="total-count">0</span><small>読み込み</small></div><div><span id="selected-count">0</span><small>出力対象</small></div><div><span id="review-count">0</span><small>要確認</small></div><div><span id="person-count">0</span><small>登録人物</small></div></section>
       <section class="review-toolbar">
         <div class="tabs" aria-label="写真の絞り込み"><button class="tab active" data-filter="all">すべて</button><button class="tab" data-filter="selected">出力対象</button><button class="tab" data-filter="review">要確認</button><button class="tab" data-filter="unanalysed">未解析</button><button class="tab" data-filter="blur">ボケ</button></div>
-        <div class="filters"><select id="person-filter" aria-label="表示する人物"><option value="">すべての人物</option><option value="__unclassified__">人物未分類</option></select><select id="date-filter" aria-label="表示する日付"><option value="">すべての日付</option></select><select id="game-filter" aria-label="表示する試合"><option value="">すべての試合</option><option value="__unassigned__">試合未設定</option></select></div>
-        <p id="unclassified-hint" class="hint" hidden>解析済みで人物がまだ付いていない写真です。背中姿などは写真を開き、「写っている人物を写真全体に手動指定」で背番号などを確認して人物を指定できます。</p>
+        <div class="filters"><select id="person-filter" aria-label="表示する人物"><option value="">すべての人物</option><option value="__unclassified__">人物未分類</option></select><select id="date-filter" aria-label="表示する日付"><option value="">すべての日付</option></select><select id="game-filter" aria-label="表示する試合"><option value="">すべての試合</option><option value="__unassigned__">試合未設定</option></select><select id="photo-sort" aria-label="撮影日時の並び順"><option value="desc">撮影日時：新しい順</option><option value="asc">撮影日時：古い順</option></select></div>
       </section>
+      <div class="capture-time-tools"><p id="capture-time-status" class="hint"></p><button id="refresh-photo-times" class="tiny-button">撮影日時を再取得</button></div>
+      <p id="unclassified-hint" class="hint" hidden>解析済みで人物がまだ付いていない写真です。背中姿などは写真を開き、「写っている人物を写真全体に手動指定」で背番号などを確認して人物を指定できます。</p>
       <div class="selection-actions"><button id="select-visible" class="text-button">表示中を出力対象に</button><button id="clear-visible" class="text-button">表示中を対象から外す</button><span id="visible-count" class="muted"></span></div>
       <div id="empty-state" class="empty-state"><div class="empty-illustration"><span></span><span></span><span>＋</span></div><h2>いつもの写真フォルダから。</h2><p>写真はこのPCから読み込みます。<br>人物を登録して解析すると、友達ごとに分類できます。</p><button id="empty-import" class="primary-button">写真フォルダを開く</button></div>
       <div id="gallery" class="gallery"></div>
