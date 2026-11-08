@@ -7,14 +7,14 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src blob: data:; connect-src http://127.0.0.1:8765 https://murajun620-crypto.github.io/photo_sorter_web/version.json; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>PhotoSorter — 写真を、渡したい人へ。</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%232b664f'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./style.css?v=2.4.0">
-  <link rel="stylesheet" href="./local.css?v=2.4.0">
-  <script type="module" src="./app.js?v=2.4.0"></script>
+  <link rel="stylesheet" href="./style.css?v=2.5.0">
+  <link rel="stylesheet" href="./local.css?v=2.5.0">
+  <script type="module" src="./app.js?v=2.5.0"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="./"><span class="brand-icon">◒</span><span>PhotoSorter <small>PC LINK</small></span></a>
-    <span class="version-tools"><span id="app-version" class="app-version">v2.4.0</span><button id="check-update" class="update-check" type="button">更新確認</button></span>
+    <span class="version-tools"><span id="app-version" class="app-version">v2.5.0</span><button id="check-update" class="update-check" type="button">更新確認</button></span>
     <span class="tagline">写真を、渡したい人へ。</span>
     <span id="gpu-status" class="status-pill">GPUを確認中</span>
     <span id="save-status" class="save-status" role="status">PCの保存データに接続中</span>
@@ -35,21 +35,26 @@
       </section>
       <section class="setting-section">
         <div class="section-heading"><span class="step">02</span><h2>背番号と試合</h2><button id="add-jersey-game" class="tiny-button">＋ 試合</button></div>
-        <p class="hint">撮影間隔から試合を仮登録できます。手動で直した試合や、見本・番号表のある試合は作り直しません。</p>
+        <label class="jersey-field">今後の写真読み込みでの試合登録<select id="game-registration" aria-label="試合の登録方法"><option value="auto">自動：日時から仮登録</option><option value="manual">手動：自分で試合を登録</option><option value="none">登録しない</option></select></label>
+        <p id="game-registration-hint" class="hint"></p>
         <button id="infer-jersey-games" class="outline-button wide">日時から試合を自動作成</button>
-        <label class="check-line"><input id="auto-infer-import" type="checkbox" checked>読み込み時にも試合を仮登録する</label>
+        <div class="section-heading roster-heading"><h3>背番号 → 人物（PC共通）</h3><button id="add-jersey-number" class="tiny-button">＋ 登録</button></div>
+        <p class="hint">新しい試合・プロジェクトでも使います。試合だけの変更は下で設定できます。</p>
+        <div id="shared-roster" class="jersey-list"></div>
         <h3>味方4種類（PC共通）</h3>
         <label class="jersey-field">見本を登録・管理する種類<select id="shared-kit-select" aria-label="PC共通ユニフォーム"></select></label>
         <button id="rename-shared-kit" class="tiny-button">種類の名前を変更</button>
         <div id="shared-kit-samples" class="jersey-list"></div>
         <label class="jersey-field">設定する試合<select id="jersey-game" aria-label="設定する試合"></select></label>
-        <button id="rename-jersey-game" class="tiny-button">試合名を変更</button>
+        <button id="rename-jersey-game" class="tiny-button">試合を編集・範囲を修正</button>
         <p id="game-time-summary" class="hint"></p>
         <fieldset id="game-kit-types" class="jersey-kit-types"><legend>この試合で使う味方の種類</legend><div id="game-kit-options"></div></fieldset>
         <button id="assign-jersey-game" class="outline-button wide">写真をこの試合に割り当て</button>
         <div class="jersey-sample-actions"><button id="own-uniform" class="outline-button">味方の見本をPCに保存</button><button id="opponent-uniform" class="outline-button">この試合の相手を登録</button></div>
         <div id="jersey-samples" class="jersey-list"></div>
-        <div class="section-heading"><h3>背番号 → 人物</h3><button id="add-jersey-number" class="tiny-button">＋ 登録</button></div>
+        <label class="check-line"><input id="use-common-roster" type="checkbox" checked>この試合で共通の番号表を使う</label>
+        <div class="section-heading"><h3>この試合だけの番号変更</h3><button id="add-game-number" class="tiny-button">＋ 変更</button></div>
+        <p class="hint">同じ番号・人物の共通登録より優先します。以前の試合の登録もここに保持します。</p>
         <div id="jersey-roster" class="jersey-list"></div>
         <p id="jersey-status" class="hint"></p>
         <button id="read-jerseys" class="outline-button wide">表示中の背番号を読む</button>
